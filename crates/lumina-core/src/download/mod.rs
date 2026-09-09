@@ -561,6 +561,7 @@ async fn store_manifest(path: &Path, manifest: &SegmentManifest) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_range(
     client: Client,
     url: Url,
@@ -603,6 +604,7 @@ async fn download_range(
     Err(last_error.unwrap_or_else(|| anyhow!("range download failed")))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_range(
     client: &Client,
     url: &Url,

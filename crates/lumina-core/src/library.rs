@@ -169,19 +169,14 @@ fn infer_title_and_authors(stem: &str) -> (String, Vec<String>) {
             return (title.to_string(), vec![author.to_string()]);
         }
     }
-    (
-        stem.replace('_', " ").replace('.', " ").trim().to_string(),
-        Vec::new(),
-    )
+    (stem.replace(['_', '.'], " ").trim().to_string(), Vec::new())
 }
 
 fn expand_home(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            let remainder = raw
-                .trim_start_matches('~')
-                .trim_start_matches(|c| c == '/' || c == '\\');
+            let remainder = raw.trim_start_matches('~').trim_start_matches(['/', '\\']);
             return PathBuf::from(home).join(remainder);
         }
     }
