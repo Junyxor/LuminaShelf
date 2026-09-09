@@ -1,7 +1,13 @@
-use crate::{library::now_unix_ms, user_state::{AccountProfile, FavoriteBook, ReadingProgress}};
+use crate::{
+    library::now_unix_ms,
+    user_state::{AccountProfile, FavoriteBook, ReadingProgress},
+};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{path::Path, sync::{Arc, Mutex, MutexGuard}};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 #[derive(Clone)]
 pub struct StateStore {
@@ -18,7 +24,9 @@ impl StateStore {
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        let store = Self { connection: Arc::new(Mutex::new(connection)) };
+        let store = Self {
+            connection: Arc::new(Mutex::new(connection)),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -26,13 +34,17 @@ impl StateStore {
     pub fn open_memory() -> Result<Self> {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        let store = Self { connection: Arc::new(Mutex::new(connection)) };
+        let store = Self {
+            connection: Arc::new(Mutex::new(connection)),
+        };
         store.migrate()?;
         Ok(store)
     }
 
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.connection.lock().map_err(|_| anyhow::anyhow!("SQLite state lock was poisoned"))
+        self.connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SQLite state lock was poisoned"))
     }
 
     fn migrate(&self) -> Result<()> {
@@ -93,10 +105,17 @@ impl StateStore {
         let mut statement = conn.prepare(
             "SELECT id, provider_id, label, login_hint, active, created_at_unix_ms, updated_at_unix_ms FROM accounts ORDER BY provider_id, active DESC, label"
         )?;
-        let rows = statement.query_map([], |row| Ok(AccountProfile {
-            id: row.get(0)?, provider_id: row.get(1)?, label: row.get(2)?, login_hint: row.get(3)?, active: row.get::<_, i64>(4)? != 0,
-            created_at_unix_ms: row.get(5)?, updated_at_unix_ms: row.get(6)?,
-        }))?;
+        let rows = statement.query_map([], |row| {
+            Ok(AccountProfile {
+                id: row.get(0)?,
+                provider_id: row.get(1)?,
+                label: row.get(2)?,
+                login_hint: row.get(3)?,
+                active: row.get::<_, i64>(4)? != 0,
+                created_at_unix_ms: row.get(5)?,
+                updated_at_unix_ms: row.get(6)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -115,7 +134,10 @@ impl StateStore {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let now = now_unix_ms();
-        tx.execute("UPDATE accounts SET active=0, updated_at_unix_ms=?2 WHERE provider_id=?1", params![provider_id, now])?;
+        tx.execute(
+            "UPDATE accounts SET active=0, updated_at_unix_ms=?2 WHERE provider_id=?1",
+            params![provider_id, now],
+        )?;
         let changed = tx.execute(
             "UPDATE accounts SET active=1, updated_at_unix_ms=?3 WHERE provider_id=?1 AND id=?2",
             params![provider_id, account_id, now],
@@ -136,7 +158,10 @@ impl StateStore {
     }
 
     pub fn remove_account(&self, account_id: &str) -> Result<bool> {
-        Ok(self.conn()?.execute("DELETE FROM accounts WHERE id=?1", [account_id])? == 1)
+        Ok(self
+            .conn()?
+            .execute("DELETE FROM accounts WHERE id=?1", [account_id])?
+            == 1)
     }
 
     pub fn upsert_favorite(&self, favorite: &FavoriteBook) -> Result<()> {
@@ -153,7 +178,8 @@ impl StateStore {
 
     pub fn remove_favorite(&self, provider_id: &str, book_id: &str) -> Result<bool> {
         Ok(self.conn()?.execute(
-            "DELETE FROM favorites WHERE provider_id=?1 AND book_id=?2", params![provider_id, book_id]
+            "DELETE FROM favorites WHERE provider_id=?1 AND book_id=?2",
+            params![provider_id, book_id],
         )? == 1)
     }
 
@@ -164,14 +190,28 @@ impl StateStore {
         )?;
         let rows = statement.query_map([], |row| {
             let authors_json: String = row.get(3)?;
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, authors_json,
-                row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, i64>(6)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                authors_json,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
         })?;
         let mut output = Vec::new();
         for row in rows {
-            let (provider_id, book_id, title, authors_json, format, cover_url, added_at_unix_ms) = row?;
+            let (provider_id, book_id, title, authors_json, format, cover_url, added_at_unix_ms) =
+                row?;
             output.push(FavoriteBook {
-                provider_id, book_id, title, authors: serde_json::from_str(&authors_json).unwrap_or_default(), format, cover_url, added_at_unix_ms,
+                provider_id,
+                book_id,
+                title,
+                authors: serde_json::from_str(&authors_json).unwrap_or_default(),
+                format,
+                cover_url,
+                added_at_unix_ms,
             });
         }
         Ok(output)
@@ -202,14 +242,26 @@ mod tests {
     use super::*;
 
     fn account(id: &str, provider: &str, active: bool) -> AccountProfile {
-        AccountProfile { id: id.into(), provider_id: provider.into(), label: id.into(), login_hint: None, active, created_at_unix_ms: 1, updated_at_unix_ms: 1 }
+        AccountProfile {
+            id: id.into(),
+            provider_id: provider.into(),
+            label: id.into(),
+            login_hint: None,
+            active,
+            created_at_unix_ms: 1,
+            updated_at_unix_ms: 1,
+        }
     }
 
     #[test]
     fn activation_is_exclusive_per_provider() {
         let store = StateStore::open_memory().unwrap();
-        store.upsert_account(&account("a", "zlibrary", false)).unwrap();
-        store.upsert_account(&account("b", "zlibrary", false)).unwrap();
+        store
+            .upsert_account(&account("a", "zlibrary", false))
+            .unwrap();
+        store
+            .upsert_account(&account("b", "zlibrary", false))
+            .unwrap();
         store.activate_account("zlibrary", "a").unwrap();
         store.activate_account("zlibrary", "b").unwrap();
         let rows = store.list_accounts().unwrap();
@@ -220,7 +272,17 @@ mod tests {
     #[test]
     fn reading_fraction_is_clamped() {
         let store = StateStore::open_memory().unwrap();
-        store.set_reading_progress(ReadingProgress { library_id: "book".into(), locator: Some("p1".into()), fraction: 2.0, updated_at_unix_ms: 9 }).unwrap();
-        assert_eq!(store.reading_progress("book").unwrap().unwrap().fraction, 1.0);
+        store
+            .set_reading_progress(ReadingProgress {
+                library_id: "book".into(),
+                locator: Some("p1".into()),
+                fraction: 2.0,
+                updated_at_unix_ms: 9,
+            })
+            .unwrap();
+        assert_eq!(
+            store.reading_progress("book").unwrap().unwrap().fraction,
+            1.0
+        );
     }
 }

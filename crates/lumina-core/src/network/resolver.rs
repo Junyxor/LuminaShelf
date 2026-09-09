@@ -106,7 +106,11 @@ impl AppResolver {
         Ok(())
     }
 
-    pub async fn set_host_override(&self, host: impl Into<String>, addresses: Vec<IpAddr>) -> Result<()> {
+    pub async fn set_host_override(
+        &self,
+        host: impl Into<String>,
+        addresses: Vec<IpAddr>,
+    ) -> Result<()> {
         if addresses.is_empty() {
             return Err(anyhow!("at least one address is required"));
         }
@@ -161,7 +165,10 @@ impl AppResolver {
                 used_fallback: false,
                 mode: policy.mode,
             }),
-            Ok(_) | Err(_) if policy.fallback_to_system && !matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) => {
+            Ok(_) | Err(_)
+                if policy.fallback_to_system
+                    && !matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) =>
+            {
                 let addresses = lookup_with_timeout(&self.system, &host, policy.timeout_ms)
                     .await
                     .context("selected resolver failed and system fallback also failed")?;
@@ -202,15 +209,27 @@ fn build_resolver(policy: &ResolverPolicy) -> Result<TokioResolver> {
     if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
         return build_system_resolver();
     }
-    let ip = policy.upstream_ip.context("custom resolver requires upstreamIp")?;
+    let ip = policy
+        .upstream_ip
+        .context("custom resolver requires upstreamIp")?;
     let name_server = match policy.mode {
         ResolverMode::CustomDns => NameServerConfig::udp_and_tcp(ip),
         ResolverMode::Dot => {
-            let server_name: Arc<str> = Arc::from(policy.server_name.as_deref().context("DoT requires serverName")?);
+            let server_name: Arc<str> = Arc::from(
+                policy
+                    .server_name
+                    .as_deref()
+                    .context("DoT requires serverName")?,
+            );
             NameServerConfig::tls(ip, server_name)
         }
         ResolverMode::Doh => {
-            let server_name: Arc<str> = Arc::from(policy.server_name.as_deref().context("DoH requires serverName")?);
+            let server_name: Arc<str> = Arc::from(
+                policy
+                    .server_name
+                    .as_deref()
+                    .context("DoH requires serverName")?,
+            );
             let path: Arc<str> = Arc::from(policy.doh_path.as_deref().unwrap_or("/dns-query"));
             NameServerConfig::https(ip, server_name, Some(path))
         }
@@ -230,11 +249,18 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
     match policy.mode {
         ResolverMode::System | ResolverMode::AppHosts => {}
         ResolverMode::CustomDns => {
-            policy.upstream_ip.context("custom DNS requires upstreamIp")?;
+            policy
+                .upstream_ip
+                .context("custom DNS requires upstreamIp")?;
         }
         ResolverMode::Dot | ResolverMode::Doh => {
-            policy.upstream_ip.context("encrypted DNS requires upstreamIp")?;
-            let name = policy.server_name.as_deref().context("encrypted DNS requires serverName")?;
+            policy
+                .upstream_ip
+                .context("encrypted DNS requires upstreamIp")?;
+            let name = policy
+                .server_name
+                .as_deref()
+                .context("encrypted DNS requires serverName")?;
             if name.starts_with("*.") {
                 return Err(anyhow!("encrypted DNS serverName cannot be a wildcard"));
             }
@@ -250,7 +276,11 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
     Ok(())
 }
 
-async fn lookup_with_timeout(resolver: &TokioResolver, host: &str, timeout_ms: u64) -> Result<Vec<IpAddr>> {
+async fn lookup_with_timeout(
+    resolver: &TokioResolver,
+    host: &str,
+    timeout_ms: u64,
+) -> Result<Vec<IpAddr>> {
     let fqdn = format!("{}.", host.trim_end_matches('.'));
     let response = timeout(Duration::from_millis(timeout_ms), resolver.lookup_ip(fqdn))
         .await
@@ -269,7 +299,8 @@ fn app_host_match(entries: &HashMap<String, Vec<IpAddr>>, host: &str) -> Option<
         .iter()
         .filter_map(|(pattern, addresses)| {
             let suffix = pattern.strip_prefix("*.")?;
-            (host != suffix && host.ends_with(&format!(".{suffix}"))).then_some((suffix.len(), addresses))
+            (host != suffix && host.ends_with(&format!(".{suffix}")))
+                .then_some((suffix.len(), addresses))
         })
         .max_by_key(|(len, _)| *len)
         .map(|(_, addresses)| addresses.clone())
@@ -295,17 +326,35 @@ mod tests {
     #[test]
     fn wildcard_host_prefers_longest_suffix() {
         let mut hosts = HashMap::new();
-        hosts.insert("*.example.org".to_string(), vec!["1.1.1.1".parse().unwrap()]);
-        hosts.insert("*.api.example.org".to_string(), vec!["2.2.2.2".parse().unwrap()]);
-        assert_eq!(app_host_match(&hosts, "v1.api.example.org").unwrap()[0], "2.2.2.2".parse::<IpAddr>().unwrap());
+        hosts.insert(
+            "*.example.org".to_string(),
+            vec!["1.1.1.1".parse().unwrap()],
+        );
+        hosts.insert(
+            "*.api.example.org".to_string(),
+            vec!["2.2.2.2".parse().unwrap()],
+        );
+        assert_eq!(
+            app_host_match(&hosts, "v1.api.example.org").unwrap()[0],
+            "2.2.2.2".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]
     fn exact_host_wins() {
         let mut hosts = HashMap::new();
-        hosts.insert("api.example.org".to_string(), vec!["3.3.3.3".parse().unwrap()]);
-        hosts.insert("*.example.org".to_string(), vec!["1.1.1.1".parse().unwrap()]);
-        assert_eq!(app_host_match(&hosts, "api.example.org").unwrap()[0], "3.3.3.3".parse::<IpAddr>().unwrap());
+        hosts.insert(
+            "api.example.org".to_string(),
+            vec!["3.3.3.3".parse().unwrap()],
+        );
+        hosts.insert(
+            "*.example.org".to_string(),
+            vec!["1.1.1.1".parse().unwrap()],
+        );
+        assert_eq!(
+            app_host_match(&hosts, "api.example.org").unwrap()[0],
+            "3.3.3.3".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
-mod resolver;
 mod reqwest_resolver;
+mod resolver;
 
-pub use resolver::{AppResolver, ResolveResult, ResolverMode, ResolverPolicy};
 pub use reqwest_resolver::ReqwestResolver;
+pub use resolver::{AppResolver, ResolveResult, ResolverMode, ResolverPolicy};

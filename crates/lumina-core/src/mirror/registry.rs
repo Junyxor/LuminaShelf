@@ -14,7 +14,11 @@ impl MirrorRegistry {
             endpoint.observed_sources.push(endpoint.source);
         }
         let origin_key = canonical_origin(&endpoint);
-        if let Some(existing_id) = self.by_origin.get(&origin_key).map(|entry| entry.value().clone()) {
+        if let Some(existing_id) = self
+            .by_origin
+            .get(&origin_key)
+            .map(|entry| entry.value().clone())
+        {
             if let Some(mut existing) = self.inner.get_mut(&existing_id) {
                 let incoming_source = endpoint.source;
                 if !existing.observed_sources.contains(&incoming_source) {
@@ -53,9 +57,15 @@ impl MirrorRegistry {
     }
 
     pub fn snapshot(&self) -> Vec<MirrorEndpoint> {
-        let mut items: Vec<_> = self.inner.iter().map(|entry| entry.value().clone()).collect();
+        let mut items: Vec<_> = self
+            .inner
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         items.sort_by(|a, b| {
-            b.score.total_cmp(&a.score).then_with(|| source_rank(b.source).cmp(&source_rank(a.source)))
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| source_rank(b.source).cmp(&source_rank(a.source)))
         });
         items
     }
@@ -63,7 +73,12 @@ impl MirrorRegistry {
     pub fn best(&self) -> Option<MirrorEndpoint> {
         self.inner
             .iter()
-            .filter(|entry| matches!(entry.value().state, MirrorState::Healthy | MirrorState::Degraded))
+            .filter(|entry| {
+                matches!(
+                    entry.value().state,
+                    MirrorState::Healthy | MirrorState::Degraded
+                )
+            })
             .max_by(|a, b| a.value().score.total_cmp(&b.value().score))
             .map(|entry| entry.value().clone())
     }
@@ -72,13 +87,19 @@ impl MirrorRegistry {
     where
         F: FnOnce(&mut MirrorEndpoint),
     {
-        let Some(mut entry) = self.inner.get_mut(id) else { return false };
+        let Some(mut entry) = self.inner.get_mut(id) else {
+            return false;
+        };
         mutate(entry.value_mut());
         true
     }
 
-    pub fn len(&self) -> usize { self.inner.len() }
-    pub fn is_empty(&self) -> bool { self.inner.is_empty() }
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }
 
 fn canonical_origin(endpoint: &MirrorEndpoint) -> String {
@@ -103,11 +124,19 @@ mod tests {
     #[test]
     fn duplicate_origin_merges_provenance_without_losing_probe_state() {
         let registry = MirrorRegistry::default();
-        let mut manual = MirrorEndpoint::new("manual", Url::parse("https://example.com").unwrap(), MirrorSourceKind::Manual);
+        let mut manual = MirrorEndpoint::new(
+            "manual",
+            Url::parse("https://example.com").unwrap(),
+            MirrorSourceKind::Manual,
+        );
         manual.score = 88.0;
         manual.state = MirrorState::Healthy;
         registry.upsert(manual);
-        registry.upsert(MirrorEndpoint::new("official", Url::parse("https://example.com/").unwrap(), MirrorSourceKind::Official));
+        registry.upsert(MirrorEndpoint::new(
+            "official",
+            Url::parse("https://example.com/").unwrap(),
+            MirrorSourceKind::Official,
+        ));
         let endpoint = registry.snapshot().pop().unwrap();
         assert_eq!(endpoint.score, 88.0);
         assert_eq!(endpoint.source, MirrorSourceKind::Official);
@@ -117,9 +146,17 @@ mod tests {
     #[test]
     fn duplicate_origin_merges_address_hints() {
         let registry = MirrorRegistry::default();
-        let mut first = MirrorEndpoint::new("A", Url::parse("https://example.com").unwrap(), MirrorSourceKind::Github);
+        let mut first = MirrorEndpoint::new(
+            "A",
+            Url::parse("https://example.com").unwrap(),
+            MirrorSourceKind::Github,
+        );
         first.address_hints.push("203.0.113.1".parse().unwrap());
-        let mut second = MirrorEndpoint::new("B", Url::parse("https://example.com/").unwrap(), MirrorSourceKind::Subscription);
+        let mut second = MirrorEndpoint::new(
+            "B",
+            Url::parse("https://example.com/").unwrap(),
+            MirrorSourceKind::Subscription,
+        );
         second.address_hints.push("203.0.113.2".parse().unwrap());
         registry.upsert(first);
         registry.upsert(second);

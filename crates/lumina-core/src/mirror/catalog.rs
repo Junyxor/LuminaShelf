@@ -58,7 +58,10 @@ impl SourceCatalog {
             .user_agent("LuminaShelf/0.2 source-discovery")
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
-        Ok(Self { client, entries: Arc::new(DashMap::new()) })
+        Ok(Self {
+            client,
+            entries: Arc::new(DashMap::new()),
+        })
     }
 
     pub fn add(&self, source: SourceDefinition) -> String {
@@ -72,24 +75,39 @@ impl SourceCatalog {
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> bool {
-        let Some(mut source) = self.entries.get_mut(id) else { return false };
+        let Some(mut source) = self.entries.get_mut(id) else {
+            return false;
+        };
         source.enabled = enabled;
         true
     }
 
     pub fn snapshot(&self) -> Vec<SourceDefinition> {
-        let mut sources: Vec<_> = self.entries.iter().map(|entry| entry.value().clone()).collect();
-        sources.sort_by(|a, b| a.label.to_ascii_lowercase().cmp(&b.label.to_ascii_lowercase()));
+        let mut sources: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        sources.sort_by(|a, b| {
+            a.label
+                .to_ascii_lowercase()
+                .cmp(&b.label.to_ascii_lowercase())
+        });
         sources
     }
 
     pub async fn refresh(&self, id: &str, registry: &MirrorRegistry) -> Result<usize> {
-        let source = self.entries.get(id).context("unknown mirror source")?.clone();
+        let source = self
+            .entries
+            .get(id)
+            .context("unknown mirror source")?
+            .clone();
         if !source.enabled {
             return Ok(0);
         }
-        let remote = RemoteEndpointSource::new(self.client.clone(), source.url.clone(), source.kind)
-            .allow_insecure_http(source.allow_insecure_http);
+        let remote =
+            RemoteEndpointSource::new(self.client.clone(), source.url.clone(), source.kind)
+                .allow_insecure_http(source.allow_insecure_http);
         match remote.discover().await {
             Ok(endpoints) => {
                 let count = endpoints.len();

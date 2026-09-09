@@ -85,7 +85,13 @@ impl MirrorEndpoint {
         }
     }
 
-    pub fn mark_probe(&mut self, metrics: ProbeMetrics, healthy: bool, score: f64, error: Option<String>) {
+    pub fn mark_probe(
+        &mut self,
+        metrics: ProbeMetrics,
+        healthy: bool,
+        score: f64,
+        error: Option<String>,
+    ) {
         let now = unix_ms();
         self.metrics = metrics;
         self.last_probe_unix_ms = Some(now);
@@ -95,7 +101,11 @@ impl MirrorEndpoint {
             self.success_streak = self.success_streak.saturating_add(1);
             self.failure_streak = 0;
             self.last_success_unix_ms = Some(now);
-            self.state = if self.score >= 75.0 { MirrorState::Healthy } else { MirrorState::Degraded };
+            self.state = if self.score >= 75.0 {
+                MirrorState::Healthy
+            } else {
+                MirrorState::Degraded
+            };
             self.last_error = None;
         } else {
             self.failure_streak = self.failure_streak.saturating_add(1);

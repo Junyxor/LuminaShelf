@@ -8,7 +8,9 @@ pub struct ReqwestResolver {
 }
 
 impl ReqwestResolver {
-    pub fn new(inner: AppResolver) -> Self { Self { inner } }
+    pub fn new(inner: AppResolver) -> Self {
+        Self { inner }
+    }
 }
 
 impl Resolve for ReqwestResolver {
@@ -17,9 +19,15 @@ impl Resolve for ReqwestResolver {
         let host = name.as_str().to_owned();
         Box::pin(async move {
             let result = resolver.resolve(&host).await.map_err(|error| {
-                Box::new(io::Error::other(error.to_string())) as Box<dyn std::error::Error + Send + Sync>
+                Box::new(io::Error::other(error.to_string()))
+                    as Box<dyn std::error::Error + Send + Sync>
             })?;
-            let addrs: Addrs = Box::new(result.addresses.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+            let addrs: Addrs = Box::new(
+                result
+                    .addresses
+                    .into_iter()
+                    .map(|ip| SocketAddr::new(ip, 0)),
+            );
             Ok(addrs)
         })
     }

@@ -64,7 +64,10 @@ impl DownloadState {
     }
 
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Connecting | Self::Downloading | Self::Verifying)
+        matches!(
+            self,
+            Self::Queued | Self::Connecting | Self::Downloading | Self::Verifying
+        )
     }
 }
 
@@ -176,7 +179,11 @@ impl SegmentedDownloader {
         Ok(Self::new(client, config))
     }
 
-    pub async fn download(&self, url: Url, destination: impl AsRef<Path>) -> Result<watch::Receiver<DownloadProgress>> {
+    pub async fn download(
+        &self,
+        url: Url,
+        destination: impl AsRef<Path>,
+    ) -> Result<watch::Receiver<DownloadProgress>> {
         let destination = destination.as_ref().to_path_buf();
         let (tx, rx) = watch::channel(DownloadProgress::default());
         let this = self.clone();
@@ -186,8 +193,14 @@ impl SegmentedDownloader {
         Ok(rx)
     }
 
-    pub async fn download_to(&self, url: Url, destination: PathBuf, tx: watch::Sender<DownloadProgress>) -> Result<()> {
-        self.download_to_with_headers(url, destination, header::HeaderMap::new(), tx).await
+    pub async fn download_to(
+        &self,
+        url: Url,
+        destination: PathBuf,
+        tx: watch::Sender<DownloadProgress>,
+    ) -> Result<()> {
+        self.download_to_with_headers(url, destination, header::HeaderMap::new(), tx)
+            .await
     }
 
     pub async fn download_to_with_headers(
@@ -197,7 +210,8 @@ impl SegmentedDownloader {
         headers: header::HeaderMap,
         tx: watch::Sender<DownloadProgress>,
     ) -> Result<()> {
-        self.download_to_with_context(url, destination, headers, None, tx).await
+        self.download_to_with_context(url, destination, headers, None, tx)
+            .await
     }
 
     pub async fn download_to_with_context(
@@ -215,50 +229,109 @@ impl SegmentedDownloader {
         let shape = self.inspect_remote(&url, &headers).await?;
         let segmented = shape.accepts_ranges && shape.total.unwrap_or(0) > self.config.segment_size;
         if !segmented {
-            if let (Some(total), Ok(metadata)) = (shape.total, tokio::fs::metadata(&destination).await) {
+            if let (Some(total), Ok(metadata)) =
+                (shape.total, tokio::fs::metadata(&destination).await)
+            {
                 if metadata.is_file() && metadata.len() == total {
-                    let _ = tx.send(DownloadProgress { downloaded_bytes: total, total_bytes: Some(total) });
+                    let _ = tx.send(DownloadProgress {
+                        downloaded_bytes: total,
+                        total_bytes: Some(total),
+                    });
                     return Ok(());
                 }
             }
         }
-        let initial = resumable_bytes(&destination, shape.total, shape.accepts_ranges, self.config.segment_size, &url, resume_key.as_deref()).await;
-        let _ = tx.send(DownloadProgress { downloaded_bytes: initial, total_bytes: shape.total });
+        let initial = resumable_bytes(
+            &destination,
+            shape.total,
+            shape.accepts_ranges,
+            self.config.segment_size,
+            &url,
+            resume_key.as_deref(),
+        )
+        .await;
+        let _ = tx.send(DownloadProgress {
+            downloaded_bytes: initial,
+            total_bytes: shape.total,
+        });
 
         if segmented {
-            self.download_segmented(url, destination, shape.total.unwrap(), headers, resume_key, tx).await
+            self.download_segmented(
+                url,
+                destination,
+                shape.total.unwrap(),
+                headers,
+                resume_key,
+                tx,
+            )
+            .await
         } else {
-            self.download_sequential(url, destination, shape, headers, tx).await
+            self.download_sequential(url, destination, shape, headers, tx)
+                .await
         }
     }
 
     async fn inspect_remote(&self, url: &Url, headers: &header::HeaderMap) -> Result<RemoteShape> {
-        if let Ok(head) = self.client.head(url.clone()).headers(headers.clone()).send().await {
+        if let Ok(head) = self
+            .client
+            .head(url.clone())
+            .headers(headers.clone())
+            .send()
+            .await
+        {
             if head.status().is_success() {
                 let total = head.content_length();
                 let accepts_ranges = header_has_bytes(head.headers());
                 if total.is_some() {
-                    return Ok(RemoteShape { total, accepts_ranges });
+                    return Ok(RemoteShape {
+                        total,
+                        accepts_ranges,
+                    });
                 }
             }
         }
 
-        let probe = self.client.get(url.clone()).headers(headers.clone()).header(header::RANGE, "bytes=0-0").send().await?;
+        let probe = self
+            .client
+            .get(url.clone())
+            .headers(headers.clone())
+            .header(header::RANGE, "bytes=0-0")
+            .send()
+            .await?;
         if probe.status() == StatusCode::PARTIAL_CONTENT {
             let total = content_range_total(probe.headers()).or_else(|| probe.content_length());
-            return Ok(RemoteShape { total, accepts_ranges: true });
+            return Ok(RemoteShape {
+                total,
+                accepts_ranges: true,
+            });
         }
         let total = probe.content_length();
         if probe.status().is_success() {
-            Ok(RemoteShape { total, accepts_ranges: header_has_bytes(probe.headers()) })
+            Ok(RemoteShape {
+                total,
+                accepts_ranges: header_has_bytes(probe.headers()),
+            })
         } else {
             Err(anyhow!("download endpoint returned {}", probe.status()))
         }
     }
 
-    async fn download_sequential(&self, url: Url, destination: PathBuf, shape: RemoteShape, headers: header::HeaderMap, tx: watch::Sender<DownloadProgress>) -> Result<()> {
-        let existing = tokio::fs::metadata(&destination).await.ok().map(|meta| meta.len()).unwrap_or(0);
-        let can_resume = shape.accepts_ranges && existing > 0 && shape.total.is_some_and(|total| existing < total);
+    async fn download_sequential(
+        &self,
+        url: Url,
+        destination: PathBuf,
+        shape: RemoteShape,
+        headers: header::HeaderMap,
+        tx: watch::Sender<DownloadProgress>,
+    ) -> Result<()> {
+        let existing = tokio::fs::metadata(&destination)
+            .await
+            .ok()
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let can_resume = shape.accepts_ranges
+            && existing > 0
+            && shape.total.is_some_and(|total| existing < total);
 
         let mut request = self.client.get(url).headers(headers);
         if can_resume {
@@ -273,7 +346,11 @@ impl SegmentedDownloader {
         }
 
         let mut file = if can_resume {
-            OpenOptions::new().create(true).append(true).open(&destination).await?
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&destination)
+                .await?
         } else {
             File::create(&destination).await?
         };
@@ -283,28 +360,49 @@ impl SegmentedDownloader {
             let chunk = chunk?;
             file.write_all(&chunk).await?;
             downloaded = downloaded.saturating_add(chunk.len() as u64);
-            let _ = tx.send(DownloadProgress { downloaded_bytes: downloaded, total_bytes: shape.total });
+            let _ = tx.send(DownloadProgress {
+                downloaded_bytes: downloaded,
+                total_bytes: shape.total,
+            });
         }
         file.flush().await?;
         Ok(())
     }
 
-    async fn download_segmented(&self, url: Url, destination: PathBuf, total: u64, headers: header::HeaderMap, resume_key: Option<String>, tx: watch::Sender<DownloadProgress>) -> Result<()> {
+    async fn download_segmented(
+        &self,
+        url: Url,
+        destination: PathBuf,
+        total: u64,
+        headers: header::HeaderMap,
+        resume_key: Option<String>,
+        tx: watch::Sender<DownloadProgress>,
+    ) -> Result<()> {
         let manifest_path = manifest_path(&destination);
-        let mut manifest = load_manifest(&manifest_path).await.unwrap_or_else(|| SegmentManifest {
-            url: url.to_string(),
-            resume_key: resume_key.clone(),
-            total_bytes: total,
-            segment_size: self.config.segment_size,
-            completed: BTreeSet::new(),
-        });
+        let mut manifest = load_manifest(&manifest_path)
+            .await
+            .unwrap_or_else(|| SegmentManifest {
+                url: url.to_string(),
+                resume_key: resume_key.clone(),
+                total_bytes: total,
+                segment_size: self.config.segment_size,
+                completed: BTreeSet::new(),
+            });
 
-        let existing_len = tokio::fs::metadata(&destination).await.ok().map(|meta| meta.len()).unwrap_or(0);
+        let existing_len = tokio::fs::metadata(&destination)
+            .await
+            .ok()
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         let identity_matches = match resume_key.as_deref() {
             Some(key) => manifest.resume_key.as_deref() == Some(key),
             None => manifest.url == url.as_str(),
         };
-        if !identity_matches || manifest.total_bytes != total || manifest.segment_size != self.config.segment_size || existing_len != total {
+        if !identity_matches
+            || manifest.total_bytes != total
+            || manifest.segment_size != self.config.segment_size
+            || existing_len != total
+        {
             manifest = SegmentManifest {
                 url: url.to_string(),
                 resume_key: resume_key.clone(),
@@ -314,7 +412,11 @@ impl SegmentedDownloader {
             };
             let prealloc_path = destination.clone();
             tokio::task::spawn_blocking(move || -> Result<()> {
-                let file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&prealloc_path)?;
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&prealloc_path)?;
                 file.set_len(total)?;
                 Ok(())
             })
@@ -325,9 +427,16 @@ impl SegmentedDownloader {
             store_manifest(&manifest_path, &manifest).await?;
         }
 
-        let initial = manifest.completed.iter().map(|index| segment_len(*index, self.config.segment_size, total)).sum::<u64>();
+        let initial = manifest
+            .completed
+            .iter()
+            .map(|index| segment_len(*index, self.config.segment_size, total))
+            .sum::<u64>();
         let downloaded = Arc::new(AtomicU64::new(initial));
-        let _ = tx.send(DownloadProgress { downloaded_bytes: initial, total_bytes: Some(total) });
+        let _ = tx.send(DownloadProgress {
+            downloaded_bytes: initial,
+            total_bytes: Some(total),
+        });
 
         let manifest = Arc::new(Mutex::new(manifest));
         let semaphore = Arc::new(Semaphore::new(self.config.concurrency.max(1)));
@@ -353,7 +462,10 @@ impl SegmentedDownloader {
 
             joins.spawn(async move {
                 let _permit = permit;
-                download_range(client, url, path, start, end, total, downloaded, tx, retries, headers).await?;
+                download_range(
+                    client, url, path, start, end, total, downloaded, tx, retries, headers,
+                )
+                .await?;
                 {
                     let mut guard = manifest.lock().await;
                     guard.completed.insert(index);
@@ -371,7 +483,14 @@ impl SegmentedDownloader {
     }
 }
 
-async fn resumable_bytes(destination: &Path, total: Option<u64>, accepts_ranges: bool, segment_size: u64, url: &Url, resume_key: Option<&str>) -> u64 {
+async fn resumable_bytes(
+    destination: &Path,
+    total: Option<u64>,
+    accepts_ranges: bool,
+    segment_size: u64,
+    url: &Url,
+    resume_key: Option<&str>,
+) -> u64 {
     if !accepts_ranges {
         return 0;
     }
@@ -381,25 +500,45 @@ async fn resumable_bytes(destination: &Path, total: Option<u64>, accepts_ranges:
                 Some(key) => manifest.resume_key.as_deref() == Some(key),
                 None => manifest.url == url.as_str(),
             };
-            if identity_matches && Some(manifest.total_bytes) == total && manifest.segment_size == segment_size {
-                return manifest.completed.iter().map(|index| segment_len(*index, segment_size, manifest.total_bytes)).sum();
+            if identity_matches
+                && Some(manifest.total_bytes) == total
+                && manifest.segment_size == segment_size
+            {
+                return manifest
+                    .completed
+                    .iter()
+                    .map(|index| segment_len(*index, segment_size, manifest.total_bytes))
+                    .sum();
             }
         }
         0
     } else {
-        let existing = tokio::fs::metadata(destination).await.ok().map(|meta| meta.len()).unwrap_or(0);
-        if total.is_some_and(|total| existing <= total) { existing } else { 0 }
+        let existing = tokio::fs::metadata(destination)
+            .await
+            .ok()
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        if total.is_some_and(|total| existing <= total) {
+            existing
+        } else {
+            0
+        }
     }
 }
 
 fn segment_len(index: u64, segment_size: u64, total: u64) -> u64 {
     let start = index * segment_size;
-    if start >= total { return 0; }
+    if start >= total {
+        return 0;
+    }
     (start + segment_size).min(total) - start
 }
 
 fn header_has_bytes(headers: &header::HeaderMap) -> bool {
-    headers.get(header::ACCEPT_RANGES).and_then(|value| value.to_str().ok()).is_some_and(|value| value.eq_ignore_ascii_case("bytes"))
+    headers
+        .get(header::ACCEPT_RANGES)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("bytes"))
 }
 
 fn content_range_total(headers: &header::HeaderMap) -> Option<u64> {
@@ -436,12 +575,27 @@ async fn download_range(
 ) -> Result<()> {
     let mut last_error = None;
     for attempt in 0..=retries {
-        match fetch_range(&client, &url, &path, start, end, total, &downloaded, &tx, &headers).await {
+        match fetch_range(
+            &client,
+            &url,
+            &path,
+            start,
+            end,
+            total,
+            &downloaded,
+            &tx,
+            &headers,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
                 if attempt < retries {
-                    tokio::time::sleep(std::time::Duration::from_millis(180 * (attempt as u64 + 1))).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        180 * (attempt as u64 + 1),
+                    ))
+                    .await;
                 }
             }
         }
@@ -460,7 +614,12 @@ async fn fetch_range(
     tx: &watch::Sender<DownloadProgress>,
     headers: &header::HeaderMap,
 ) -> Result<()> {
-    let response = client.get(url.clone()).headers(headers.clone()).header(header::RANGE, format!("bytes={start}-{end}")).send().await?;
+    let response = client
+        .get(url.clone())
+        .headers(headers.clone())
+        .header(header::RANGE, format!("bytes={start}-{end}"))
+        .send()
+        .await?;
     if response.status() != StatusCode::PARTIAL_CONTENT {
         return Err(anyhow!("server ignored byte range: {}", response.status()));
     }
@@ -468,7 +627,11 @@ async fn fetch_range(
     let body = response.bytes().await?;
     let expected = end - start + 1;
     if body.len() as u64 != expected {
-        return Err(anyhow!("short range response: expected {expected}, got {}", body.len())).with_context(|| format!("range {start}-{end}"));
+        return Err(anyhow!(
+            "short range response: expected {expected}, got {}",
+            body.len()
+        ))
+        .with_context(|| format!("range {start}-{end}"));
     }
 
     let mut file = OpenOptions::new().write(true).open(path).await?;
@@ -477,7 +640,10 @@ async fn fetch_range(
     file.flush().await?;
 
     let now = downloaded.fetch_add(expected, Ordering::Relaxed) + expected;
-    let _ = tx.send(DownloadProgress { downloaded_bytes: now.min(total), total_bytes: Some(total) });
+    let _ = tx.send(DownloadProgress {
+        downloaded_bytes: now.min(total),
+        total_bytes: Some(total),
+    });
     Ok(())
 }
 

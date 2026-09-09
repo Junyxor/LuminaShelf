@@ -10,11 +10,7 @@ use std::{
 };
 use tokio::{net::TcpStream, time::timeout};
 use tokio_rustls::{
-    rustls::{
-        crypto::ring,
-        pki_types::ServerName,
-        ClientConfig, RootCertStore,
-    },
+    rustls::{crypto::ring, pki_types::ServerName, ClientConfig, RootCertStore},
     TlsConnector,
 };
 
@@ -92,11 +88,18 @@ impl ProbeEngine {
                                 endpoint.failure_streak,
                                 this.config.weights,
                             );
-                            registry.update(&endpoint.id, |item| item.mark_probe(metrics, healthy, score, None));
+                            registry.update(&endpoint.id, |item| {
+                                item.mark_probe(metrics, healthy, score, None)
+                            });
                         }
                         Err(error) => {
                             registry.update(&endpoint.id, |item| {
-                                item.mark_probe(ProbeMetrics::default(), false, 0.0, Some(error.to_string()))
+                                item.mark_probe(
+                                    ProbeMetrics::default(),
+                                    false,
+                                    0.0,
+                                    Some(error.to_string()),
+                                )
                             });
                         }
                     }
@@ -106,28 +109,43 @@ impl ProbeEngine {
     }
 
     pub async fn probe_endpoint(&self, endpoint: &super::MirrorEndpoint) -> Result<ProbeMetrics> {
-        self.probe_route(&endpoint.origin, &endpoint.address_hints).await
+        self.probe_route(&endpoint.origin, &endpoint.address_hints)
+            .await
     }
 
     pub async fn probe_one(&self, origin: &url::Url) -> Result<ProbeMetrics> {
         self.probe_route(origin, &[]).await
     }
 
-    async fn probe_route(&self, origin: &url::Url, address_hints: &[std::net::IpAddr]) -> Result<ProbeMetrics> {
+    async fn probe_route(
+        &self,
+        origin: &url::Url,
+        address_hints: &[std::net::IpAddr],
+    ) -> Result<ProbeMetrics> {
         let total_started = Instant::now();
         let host = origin.host_str().context("mirror URL has no host")?;
-        let port = origin.port_or_known_default().ok_or_else(|| anyhow!("mirror URL has no known port"))?;
+        let port = origin
+            .port_or_known_default()
+            .ok_or_else(|| anyhow!("mirror URL has no known port"))?;
 
         let resolved = self.resolver.resolve(host).await;
         let mut addresses = address_hints.to_vec();
         let (dns_ms, via_app_hosts, resolver_fallback) = match resolved {
             Ok(result) => {
                 for ip in result.addresses {
-                    if !addresses.contains(&ip) { addresses.push(ip); }
+                    if !addresses.contains(&ip) {
+                        addresses.push(ip);
+                    }
                 }
-                (Some(result.elapsed_ms), result.via_app_hosts, result.used_fallback)
+                (
+                    Some(result.elapsed_ms),
+                    result.via_app_hosts,
+                    result.used_fallback,
+                )
             }
-            Err(error) if address_hints.is_empty() => return Err(error.context("DNS resolution failed")),
+            Err(error) if address_hints.is_empty() => {
+                return Err(error.context("DNS resolution failed"))
+            }
             Err(_) => (None, false, false),
         };
         if addresses.is_empty() {
@@ -135,15 +153,22 @@ impl ProbeEngine {
         }
 
         let tcp_started = Instant::now();
-        let (tcp, selected_addr) = self.connect_race(&addresses, port).await.context("TCP connection failed")?;
+        let (tcp, selected_addr) = self
+            .connect_race(&addresses, port)
+            .await
+            .context("TCP connection failed")?;
         let tcp_ms = tcp_started.elapsed().as_secs_f64() * 1000.0;
 
         let tls_ms = if origin.scheme() == "https" {
             let tls_started = Instant::now();
-            let server_name = ServerName::try_from(host.to_owned()).context("invalid TLS server name")?;
-            timeout(self.config.connect_timeout, self.tls.connect(server_name, tcp))
-                .await
-                .context("TLS handshake timed out")??;
+            let server_name =
+                ServerName::try_from(host.to_owned()).context("invalid TLS server name")?;
+            timeout(
+                self.config.connect_timeout,
+                self.tls.connect(server_name, tcp),
+            )
+            .await
+            .context("TLS handshake timed out")??;
             Some(tls_started.elapsed().as_secs_f64() * 1000.0)
         } else {
             drop(tcp);
@@ -197,7 +222,11 @@ impl ProbeEngine {
         })
     }
 
-    async fn connect_race(&self, addresses: &[std::net::IpAddr], port: u16) -> Result<(TcpStream, SocketAddr)> {
+    async fn connect_race(
+        &self,
+        addresses: &[std::net::IpAddr],
+        port: u16,
+    ) -> Result<(TcpStream, SocketAddr)> {
         let mut attempts = futures::stream::FuturesUnordered::new();
         let ordered = interleave_ip_families(addresses);
         for (index, ip) in ordered.into_iter().enumerate() {
@@ -233,12 +262,20 @@ fn interleave_ip_families(addresses: &[std::net::IpAddr]) -> Vec<std::net::IpAdd
     let prefer_v6 = addresses.first().is_some_and(std::net::IpAddr::is_ipv6);
     let mut out = Vec::with_capacity(addresses.len());
     loop {
-        let pair = if prefer_v6 { (v6.next(), v4.next()) } else { (v4.next(), v6.next()) };
+        let pair = if prefer_v6 {
+            (v6.next(), v4.next())
+        } else {
+            (v4.next(), v6.next())
+        };
         if pair.0.is_none() && pair.1.is_none() {
             break;
         }
-        if let Some(ip) = pair.0 { out.push(ip); }
-        if let Some(ip) = pair.1 { out.push(ip); }
+        if let Some(ip) = pair.0 {
+            out.push(ip);
+        }
+        if let Some(ip) = pair.1 {
+            out.push(ip);
+        }
     }
     out
 }

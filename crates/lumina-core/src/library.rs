@@ -22,7 +22,13 @@ pub enum LibraryFormat {
 
 impl LibraryFormat {
     pub fn from_path(path: &Path) -> Self {
-        match path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+        match path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "epub" => Self::Epub,
             "pdf" => Self::Pdf,
             "mobi" => Self::Mobi,
@@ -75,7 +81,8 @@ impl LibraryItem {
         source_book_id: Option<String>,
     ) -> Result<Self> {
         let requested = expand_home(path.as_ref());
-        let path = fs::canonicalize(&requested).with_context(|| format!("open library file {}", requested.display()))?;
+        let path = fs::canonicalize(&requested)
+            .with_context(|| format!("open library file {}", requested.display()))?;
         let metadata = fs::metadata(&path)?;
         if !metadata.is_file() {
             return Err(anyhow!("library item must be a file"));
@@ -84,7 +91,11 @@ impl LibraryItem {
             return Err(anyhow!("unsupported ebook format"));
         }
 
-        let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("Untitled").trim();
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Untitled")
+            .trim();
         let (guessed_title, authors) = infer_title_and_authors(stem);
         let title = title_hint
             .map(str::trim)
@@ -107,9 +118,14 @@ impl LibraryItem {
     }
 }
 
-pub fn scan_folder(path: impl AsRef<Path>, recursive: bool, max_items: usize) -> Result<Vec<PathBuf>> {
+pub fn scan_folder(
+    path: impl AsRef<Path>,
+    recursive: bool,
+    max_items: usize,
+) -> Result<Vec<PathBuf>> {
     let requested = expand_home(path.as_ref());
-    let root = fs::canonicalize(&requested).with_context(|| format!("open library folder {}", requested.display()))?;
+    let root = fs::canonicalize(&requested)
+        .with_context(|| format!("open library folder {}", requested.display()))?;
     if !root.is_dir() {
         return Err(anyhow!("library scan path must be a directory"));
     }
@@ -117,7 +133,9 @@ pub fn scan_folder(path: impl AsRef<Path>, recursive: bool, max_items: usize) ->
     let mut pending = vec![root];
     let mut files = Vec::new();
     while let Some(folder) = pending.pop() {
-        for entry in fs::read_dir(&folder).with_context(|| format!("read folder {}", folder.display()))? {
+        for entry in
+            fs::read_dir(&folder).with_context(|| format!("read folder {}", folder.display()))?
+        {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => continue,
@@ -151,14 +169,19 @@ fn infer_title_and_authors(stem: &str) -> (String, Vec<String>) {
             return (title.to_string(), vec![author.to_string()]);
         }
     }
-    (stem.replace('_', " " ).replace('.', " " ).trim().to_string(), Vec::new())
+    (
+        stem.replace('_', " ").replace('.', " ").trim().to_string(),
+        Vec::new(),
+    )
 }
 
 fn expand_home(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            let remainder = raw.trim_start_matches('~').trim_start_matches(|c| c == '/' || c == '\\');
+            let remainder = raw
+                .trim_start_matches('~')
+                .trim_start_matches(|c| c == '/' || c == '\\');
             return PathBuf::from(home).join(remainder);
         }
     }
@@ -170,5 +193,8 @@ pub fn now_unix_ms() -> i64 {
 }
 
 fn system_time_ms(time: SystemTime) -> i64 {
-    time.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }

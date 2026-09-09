@@ -48,12 +48,24 @@ pub fn score_endpoint(
 
 fn decay(value: Option<f64>, excellent: f64, bad: f64) -> f64 {
     let Some(value) = value else { return 0.25 };
-    if value <= excellent { 1.0 } else if value >= bad { 0.0 } else { 1.0 - ((value - excellent) / (bad - excellent)) }
+    if value <= excellent {
+        1.0
+    } else if value >= bad {
+        0.0
+    } else {
+        1.0 - ((value - excellent) / (bad - excellent))
+    }
 }
 
 fn rise(value: Option<f64>, poor: f64, excellent: f64) -> f64 {
     let Some(value) = value else { return 0.2 };
-    if value <= poor { 0.0 } else if value >= excellent { 1.0 } else { (value - poor) / (excellent - poor) }
+    if value <= poor {
+        0.0
+    } else if value >= excellent {
+        1.0
+    } else {
+        (value - poor) / (excellent - poor)
+    }
 }
 
 #[cfg(test)]
@@ -62,14 +74,32 @@ mod tests {
 
     #[test]
     fn fast_endpoint_scores_higher() {
-        let fast = ProbeMetrics { tcp_ms: Some(22.0), ttfb_ms: Some(65.0), throughput_mbps: Some(75.0), status_code: Some(200), ..Default::default() };
-        let slow = ProbeMetrics { tcp_ms: Some(450.0), ttfb_ms: Some(950.0), throughput_mbps: Some(8.0), status_code: Some(200), ..Default::default() };
-        assert!(score_endpoint(&fast, 8, 0, ScoreWeights::default()) > score_endpoint(&slow, 8, 0, ScoreWeights::default()));
+        let fast = ProbeMetrics {
+            tcp_ms: Some(22.0),
+            ttfb_ms: Some(65.0),
+            throughput_mbps: Some(75.0),
+            status_code: Some(200),
+            ..Default::default()
+        };
+        let slow = ProbeMetrics {
+            tcp_ms: Some(450.0),
+            ttfb_ms: Some(950.0),
+            throughput_mbps: Some(8.0),
+            status_code: Some(200),
+            ..Default::default()
+        };
+        assert!(
+            score_endpoint(&fast, 8, 0, ScoreWeights::default())
+                > score_endpoint(&slow, 8, 0, ScoreWeights::default())
+        );
     }
 
     #[test]
     fn unreachable_scores_zero() {
-        let metrics = ProbeMetrics { status_code: Some(503), ..Default::default() };
+        let metrics = ProbeMetrics {
+            status_code: Some(503),
+            ..Default::default()
+        };
         assert_eq!(score_endpoint(&metrics, 0, 0, ScoreWeights::default()), 0.0);
     }
 }

@@ -2,7 +2,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum BookFormat { Epub, Pdf, Mobi, Azw3, Txt, Cbz, Other }
+pub enum BookFormat {
+    Epub,
+    Pdf,
+    Mobi,
+    Azw3,
+    Txt,
+    Cbz,
+    Other,
+}
 
 impl BookFormat {
     pub fn parse(value: &str) -> Self {
@@ -18,7 +26,13 @@ impl BookFormat {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Epub => "epub", Self::Pdf => "pdf", Self::Mobi => "mobi", Self::Azw3 => "azw3", Self::Txt => "txt", Self::Cbz => "cbz", Self::Other => "bin",
+            Self::Epub => "epub",
+            Self::Pdf => "pdf",
+            Self::Mobi => "mobi",
+            Self::Azw3 => "azw3",
+            Self::Txt => "txt",
+            Self::Cbz => "cbz",
+            Self::Other => "bin",
         }
     }
 }
@@ -34,11 +48,20 @@ pub struct ProviderCapabilities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderDescriptor { pub id: String, pub name: String, pub capabilities: ProviderCapabilities }
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub name: String,
+    pub capabilities: ProviderCapabilities,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchQuery { pub text: String, pub page: u32, pub page_size: u16, pub formats: Vec<BookFormat> }
+pub struct SearchQuery {
+    pub text: String,
+    pub page: u32,
+    pub page_size: u16,
+    pub formats: Vec<BookFormat>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,19 +72,25 @@ pub struct BookSummary {
     pub year: Option<i32>,
     pub language: Option<String>,
     pub format: Option<BookFormat>,
-    #[serde(default)] pub available_formats: Vec<BookFormat>,
+    #[serde(default)]
+    pub available_formats: Vec<BookFormat>,
     pub size_bytes: Option<u64>,
     pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchResult { pub items: Vec<BookSummary>, pub page: u32, pub has_next: bool }
+pub struct SearchResult {
+    pub items: Vec<BookSummary>,
+    pub page: u32,
+    pub has_next: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookDetails {
-    #[serde(flatten)] pub summary: BookSummary,
+    #[serde(flatten)]
+    pub summary: BookSummary,
     pub description: Option<String>,
     pub identifiers: Vec<(String, String)>,
 }

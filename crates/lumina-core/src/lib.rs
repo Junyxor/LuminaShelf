@@ -12,8 +12,15 @@ pub mod storage;
 pub mod user_state;
 
 pub use library::{LibraryFormat, LibraryItem};
-pub use mirror::{MirrorEndpoint, MirrorRegistry, MirrorSourceKind, MirrorState, ProbeMetrics, ScoreWeights, SourceCatalog, SourceDefinition};
+pub use mirror::{
+    MirrorEndpoint, MirrorRegistry, MirrorSourceKind, MirrorState, ProbeMetrics, ScoreWeights,
+    SourceCatalog, SourceDefinition,
+};
 pub use network::{AppResolver, ReqwestResolver, ResolveResult, ResolverMode, ResolverPolicy};
-pub use provider::{BookDetails, BookFormat, BookSummary, GutendexProvider, ProviderDescriptor, ProviderRegistry, SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider, ZLibrarySession};
+pub use provider::{
+    BookDetails, BookFormat, BookSummary, GutendexProvider, ProviderDescriptor, ProviderRegistry,
+    SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile,
+    ZLibraryProvider, ZLibrarySession,
+};
 pub use storage::StateStore;
 pub use user_state::{AccountProfile, FavoriteBook, ReadingProgress};
