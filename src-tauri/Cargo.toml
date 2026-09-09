@@ -1,0 +1,18 @@
+[package]
+name = "lumina-shelf-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "lumina_shelf_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lumina-core = { path = "../crates/lumina-core" }
+serde.workspace = true
+tauri = { version = "2", features = [] }
