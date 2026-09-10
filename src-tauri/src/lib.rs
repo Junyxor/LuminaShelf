@@ -5,17 +5,28 @@ use lumina_core::{
     ProviderRegistry, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
 };
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
     resolver: AppResolver,
     providers: ProviderRegistry,
+    resolver_policy_path: PathBuf,
 }
 
 impl AppState {
-    fn new() -> Result<Self, String> {
-        let resolver = AppResolver::system().map_err(|error| error.to_string())?;
+    fn new(resolver_policy_path: PathBuf) -> Result<Self, String> {
+        let policy = match load_resolver_policy(&resolver_policy_path) {
+            Ok(policy) => policy,
+            Err(_) => {
+                let _ = fs::remove_file(&resolver_policy_path);
+                ResolverPolicy::default()
+            }
+        };
+        let resolver = AppResolver::new(policy).map_err(|error| error.to_string())?;
         let providers = ProviderRegistry::default();
         let gutendex =
             GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
@@ -23,6 +34,7 @@ impl AppState {
         Ok(Self {
             resolver,
             providers,
+            resolver_policy_path,
         })
     }
 }
@@ -77,12 +89,18 @@ async fn set_resolver_policy(
     state: State<'_, AppState>,
     policy: ResolverPolicy,
 ) -> Result<ResolverPolicy, String> {
+    let previous = state.resolver.policy().await;
     state
         .resolver
         .set_policy(policy)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(state.resolver.policy().await)
+    let applied = state.resolver.policy().await;
+    if let Err(error) = save_resolver_policy(&state.resolver_policy_path, &applied) {
+        let _ = state.resolver.set_policy(previous).await;
+        return Err(error);
+    }
+    Ok(applied)
 }
 
 #[tauri::command]
@@ -232,6 +250,23 @@ async fn download_book(
     })
 }
 
+fn load_resolver_policy(path: &Path) -> Result<ResolverPolicy, String> {
+    if !path.exists() {
+        return Ok(ResolverPolicy::default());
+    }
+    let bytes = fs::read(path).map_err(|error| format!("read resolver policy: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("decode resolver policy: {error}"))
+}
+
+fn save_resolver_policy(path: &Path, policy: &ResolverPolicy) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("create config directory: {error}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(policy)
+        .map_err(|error| format!("encode resolver policy: {error}"))?;
+    fs::write(path, bytes).map_err(|error| format!("write resolver policy: {error}"))
+}
+
 fn unique_destination(directory: &Path, title: &str, extension: &str) -> PathBuf {
     let base = sanitize_filename(title);
     let first = directory.join(format!("{base}.{extension}"));
@@ -267,9 +302,17 @@ fn sanitize_filename(value: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let state = AppState::new().expect("failed to initialize LuminaShelf core bridge");
     tauri::Builder::default()
-        .manage(state)
+        .setup(|app| {
+            let policy_path = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .join("resolver-policy.json");
+            let state = AppState::new(policy_path).map_err(std::io::Error::other)?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             core_status,
             provider_descriptors,
