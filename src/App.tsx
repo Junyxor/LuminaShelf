@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
+import ZLibraryAccount, { type ZLibraryAccountStatus } from "./ZLibraryAccount";
 
 type CoreStatus = {
   name: string;
@@ -152,6 +153,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [status, setStatus] = useState<CoreStatus | null>(null);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
+  const [zlibraryStatus, setZlibraryStatus] = useState<ZLibraryAccountStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 
@@ -175,13 +177,15 @@ export default function App() {
     Promise.all([
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
+      invoke<ZLibraryAccountStatus>("zlibrary_status"),
     ])
-      .then(([nextStatus, nextProviders]) => {
+      .then(([nextStatus, nextProviders, nextZlibraryStatus]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
+        setZlibraryStatus(nextZlibraryStatus);
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
-          : nextProviders[0]?.id ?? "";
+          : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
         setSelectedProvider(preferred);
       })
       .catch((reason) => setError(String(reason)));
@@ -217,6 +221,12 @@ export default function App() {
   }, []);
 
   const active = pageMeta[page];
+  const selectedProviderDescriptor = providers.find((provider) => provider.id === selectedProvider);
+  const providerNeedsLogin = Boolean(
+    selectedProviderDescriptor?.capabilities.authenticated
+      && selectedProvider === "zlibrary"
+      && !zlibraryStatus?.signedIn,
+  );
   const downloadTasks = useMemo(
     () => Object.values(downloads).sort((a, b) => a.title.localeCompare(b.title)),
     [downloads],
@@ -230,8 +240,17 @@ export default function App() {
     setBookDetails(null);
   }
 
+  function handleZlibraryStatus(next: ZLibraryAccountStatus) {
+    setZlibraryStatus(next);
+    if (!next.signedIn && selectedProvider === "zlibrary") {
+      setSearchResult(null);
+      setSelectedBook(null);
+      setBookDetails(null);
+    }
+  }
+
   async function runSearch(targetPage = 1) {
-    if (!query.trim() || !selectedProvider) return;
+    if (!query.trim() || !selectedProvider || providerNeedsLogin) return;
     setSearching(true);
     setError(null);
     try {
@@ -277,6 +296,10 @@ export default function App() {
     const format = preferredFormat(book);
     if (!format || !selectedProvider) {
       setError("这本书没有可用的下载格式。");
+      return;
+    }
+    if (providerNeedsLogin) {
+      setPage("account");
       return;
     }
     const key = `${selectedProvider}:${book.id}`;
@@ -351,7 +374,7 @@ export default function App() {
 
   function resetSettings() {
     setSettings(defaultSettings);
-    changeProvider(providers[0]?.id ?? "");
+    changeProvider(providers.find((provider) => !provider.capabilities.authenticated)?.id ?? providers[0]?.id ?? "");
   }
 
   function renderHome() {
@@ -361,7 +384,7 @@ export default function App() {
           <div>
             <span className="eyebrow">HIGH PERFORMANCE E-BOOK CLIENT</span>
             <h2>检索、下载与本地书架，<br />现在开始真正连起来。</h2>
-            <p>React 只负责界面，搜索、解析、网络与分段下载继续交给 Rust Core。先用公开 Provider 跑通完整闭环，再接账户生态。</p>
+            <p>React 只负责界面，搜索、解析、账户与分段下载继续交给 Rust Core。公开数据源可以直接用，需要认证的数据源从左上角账户页连接。</p>
             <button className="primary-button hero-action" onClick={() => setPage("search")}>开始搜索</button>
           </div>
           <div className="orb"><span>Z</span></div>
@@ -382,7 +405,7 @@ export default function App() {
                 <div className="provider-flags">
                   {provider.capabilities.searchable ? <span>搜索</span> : null}
                   {provider.capabilities.downloadable ? <span>下载</span> : null}
-                  {provider.capabilities.authenticated ? <span>账户</span> : <span>公开</span>}
+                  {provider.id === "zlibrary" ? <span>{zlibraryStatus?.signedIn ? "已登录" : "待登录"}</span> : <span>公开</span>}
                 </div>
               </div>
             ))}
@@ -403,12 +426,18 @@ export default function App() {
                 <option value={provider.id} key={provider.id}>{provider.name}</option>
               ))}
             </select>
-            <button className="primary-button" disabled={searching || !query.trim()}>{searching ? "搜索中…" : "搜索"}</button>
+            <button className="primary-button" disabled={searching || !query.trim() || providerNeedsLogin}>{searching ? "搜索中…" : "搜索"}</button>
           </form>
           <div className="search-hint">每页 {settings.searchPageSize} 项 · Provider 请求由 Rust Core 发起</div>
         </section>
 
-        {searchResult ? (
+        {providerNeedsLogin ? (
+          <section className="auth-gate glass">
+            <span className="auth-gate-mark">○</span>
+            <div><span className="eyebrow">AUTHENTICATION REQUIRED</span><h3>先连接 Z-Library 账户</h3><p>这个 Provider 的搜索、详情和下载需要 EAPI Session。账户入口已经从主导航移到左上角，不会占用主要工作区。</p></div>
+            <button className="primary-button" onClick={() => setPage("account")}>前往账户</button>
+          </section>
+        ) : searchResult ? (
           <section className="results-section">
             <div className="section-heading">
               <div><span className="eyebrow">RESULTS</span><h3>第 {searchResult.page} 页 · {searchResult.items.length} 项</h3></div>
@@ -507,24 +536,6 @@ export default function App() {
     );
   }
 
-  function renderAccount() {
-    return (
-      <section className="settings-grid">
-        <article className="setting-card glass">
-          <span className="eyebrow">ACCOUNT PROVIDERS</span>
-          <h3>账户中心</h3>
-          <p>账户页从业务导航中独立出来。后续 Z-Library 登录、下载配额、历史记录与 Session Vault 都放在这里。</p>
-          <div className="account-placeholder"><i />尚未登录任何需要认证的 Provider</div>
-        </article>
-        <article className="setting-card glass">
-          <span className="eyebrow">PUBLIC ACCESS</span>
-          <h3>当前可用</h3>
-          <p>{providers.filter((provider) => !provider.capabilities.authenticated).map((provider) => provider.name).join(" · ") || "正在加载 Provider"}</p>
-        </article>
-      </section>
-    );
-  }
-
   function renderSettings() {
     return (
       <div className="settings-stack">
@@ -536,7 +547,7 @@ export default function App() {
         <section className="settings-grid">
           <article className="setting-card glass">
             <span className="eyebrow">SEARCH</span><h3>搜索</h3>
-            <label><span>默认 Provider<small>启动时优先使用</small></span><select value={settings.defaultProvider} onChange={(event) => { const value = event.target.value; setSettings((current) => ({ ...current, defaultProvider: value })); changeProvider(value || providers[0]?.id || ""); }}><option value="">自动选择</option>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.name}</option>)}</select></label>
+            <label><span>默认 Provider<small>启动时优先使用</small></span><select value={settings.defaultProvider} onChange={(event) => { const value = event.target.value; setSettings((current) => ({ ...current, defaultProvider: value })); changeProvider(value || providers.find((provider) => !provider.capabilities.authenticated)?.id || providers[0]?.id || ""); }}><option value="">自动选择</option>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.name}</option>)}</select></label>
             <label><span>每页结果数<small>1–50，由 Core 限制</small></span><select value={settings.searchPageSize} onChange={(event) => setSettings((current) => ({ ...current, searchPageSize: Number(event.target.value) }))}><option value={12}>12</option><option value={24}>24</option><option value={36}>36</option><option value={50}>50</option></select></label>
           </article>
 
@@ -569,7 +580,7 @@ export default function App() {
             <div className="brand-copy"><strong>LuminaShelf</strong><span>Rust library client</span></div>
           </button>
           <div className="utility-buttons">
-            <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户" title="账户">○</button>
+            <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户" title="账户"><span className={zlibraryStatus?.signedIn ? "utility-online" : ""}>○</span></button>
             <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")} aria-label="设置" title="设置">⚙</button>
           </div>
         </div>
@@ -587,7 +598,7 @@ export default function App() {
         <header className="page-header">
           <div className="page-heading">
             <div className="mobile-utilities">
-              <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户">○</button>
+              <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户"><span className={zlibraryStatus?.signedIn ? "utility-online" : ""}>○</span></button>
               <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")} aria-label="设置">⚙</button>
             </div>
             <div><span className="eyebrow">LUMINASHELF / {active.eyebrow}</span><h1>{active.label}</h1></div>
@@ -601,7 +612,7 @@ export default function App() {
         {page === "search" ? renderSearch() : null}
         {page === "downloads" ? renderDownloads() : null}
         {page === "library" ? renderLibrary() : null}
-        {page === "account" ? renderAccount() : null}
+        {page === "account" ? <ZLibraryAccount initialStatus={zlibraryStatus} onStatusChange={handleZlibraryStatus} /> : null}
         {page === "settings" ? renderSettings() : null}
       </main>
 

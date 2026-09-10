@@ -131,10 +131,12 @@ impl ZLibraryProvider {
 
     pub async fn download_history(&self, page: u32) -> Result<ZLibraryHistoryPage> {
         let page = page.max(1);
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        query.append_pair("page", &page.to_string());
-        query.append_pair("limit", "50");
-        let path = format!("/eapi/user/book/downloaded?{}", query.finish());
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("page", &page.to_string());
+            query.append_pair("limit", "50");
+            format!("/eapi/user/book/downloaded?{}", query.finish())
+        };
         let response: SearchEnvelope = self.request_json(&path, None, true).await?;
         if response.success != 1 {
             return Err(anyhow!(response
