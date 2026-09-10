@@ -2,7 +2,7 @@ use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::scan_folder,
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, SearchQuery, SearchResult,
+    ProviderRegistry, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -65,6 +65,40 @@ fn core_status() -> CoreStatus {
 #[tauri::command]
 fn provider_descriptors(state: State<'_, AppState>) -> Vec<ProviderDescriptor> {
     state.providers.descriptors()
+}
+
+#[tauri::command]
+async fn resolver_policy(state: State<'_, AppState>) -> ResolverPolicy {
+    state.resolver.policy().await
+}
+
+#[tauri::command]
+async fn set_resolver_policy(
+    state: State<'_, AppState>,
+    policy: ResolverPolicy,
+) -> Result<ResolverPolicy, String> {
+    state
+        .resolver
+        .set_policy(policy)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(state.resolver.policy().await)
+}
+
+#[tauri::command]
+async fn resolve_host(
+    state: State<'_, AppState>,
+    host: String,
+) -> Result<ResolveResult, String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("host cannot be empty".to_string());
+    }
+    state
+        .resolver
+        .resolve(host)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -242,6 +276,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_status,
             provider_descriptors,
+            resolver_policy,
+            set_resolver_policy,
+            resolve_host,
             search_books,
             book_details,
             scan_library,
