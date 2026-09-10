@@ -14,7 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 lumina-core = { path = "../crates/lumina-core" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+url.workspace = true
 tauri = { version = "2", features = [] }
