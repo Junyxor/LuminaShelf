@@ -222,6 +222,13 @@ export default function App() {
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
 
+  function changeProvider(providerId: string) {
+    setSelectedProvider(providerId);
+    setSearchResult(null);
+    setSelectedBook(null);
+    setBookDetails(null);
+  }
+
   async function runSearch(targetPage = 1) {
     if (!query.trim() || !selectedProvider) return;
     setSearching(true);
@@ -343,7 +350,7 @@ export default function App() {
 
   function resetSettings() {
     setSettings(defaultSettings);
-    setSelectedProvider(providers[0]?.id ?? "");
+    changeProvider(providers[0]?.id ?? "");
   }
 
   function renderHome() {
@@ -390,7 +397,7 @@ export default function App() {
         <section className="search-panel glass">
           <form className="search-form" onSubmit={submitSearch}>
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="书名、作者、关键词…" autoFocus />
-            <select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value)}>
+            <select value={selectedProvider} onChange={(event) => changeProvider(event.target.value)}>
               {providers.filter((provider) => provider.capabilities.searchable).map((provider) => (
                 <option value={provider.id} key={provider.id}>{provider.name}</option>
               ))}
@@ -521,14 +528,14 @@ export default function App() {
     return (
       <div className="settings-stack">
         <section className="settings-intro glass">
-          <div><span className="eyebrow">APP PREFERENCES</span><h2>设置应该安静地待在左上角。</h2><p>它不是主要工作流，所以不再占主导航。这里集中管理搜索、下载、本地书库、网络和核心信息。</p></div>
+          <div><span className="eyebrow">APP PREFERENCES</span><h2>偏好与底层能力，都集中在这里。</h2><p>设置不是主要工作流，因此从主导航中独立出来。搜索、下载、本地书库、网络与核心配置都统一放在这个页面。</p></div>
           <button className="ghost-button" onClick={resetSettings}>恢复默认</button>
         </section>
 
         <section className="settings-grid">
           <article className="setting-card glass">
             <span className="eyebrow">SEARCH</span><h3>搜索</h3>
-            <label><span>默认 Provider<small>启动时优先使用</small></span><select value={settings.defaultProvider} onChange={(event) => { const value = event.target.value; setSettings((current) => ({ ...current, defaultProvider: value })); setSelectedProvider(value); }}><option value="">自动选择</option>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.name}</option>)}</select></label>
+            <label><span>默认 Provider<small>启动时优先使用</small></span><select value={settings.defaultProvider} onChange={(event) => { const value = event.target.value; setSettings((current) => ({ ...current, defaultProvider: value })); changeProvider(value || providers[0]?.id || ""); }}><option value="">自动选择</option>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.name}</option>)}</select></label>
             <label><span>每页结果数<small>1–50，由 Core 限制</small></span><select value={settings.searchPageSize} onChange={(event) => setSettings((current) => ({ ...current, searchPageSize: Number(event.target.value) }))}><option value={12}>12</option><option value={24}>24</option><option value={36}>36</option><option value={50}>50</option></select></label>
           </article>
 
