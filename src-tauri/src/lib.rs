@@ -86,10 +86,7 @@ async fn set_resolver_policy(
 }
 
 #[tauri::command]
-async fn resolve_host(
-    state: State<'_, AppState>,
-    host: String,
-) -> Result<ResolveResult, String> {
+async fn resolve_host(state: State<'_, AppState>, host: String) -> Result<ResolveResult, String> {
     let host = host.trim();
     if host.is_empty() {
         return Err("host cannot be empty".to_string());
