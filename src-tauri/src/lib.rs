@@ -19,14 +19,14 @@ struct AppState {
 
 impl AppState {
     fn new(resolver_policy_path: PathBuf) -> Result<Self, String> {
-        let policy = match load_resolver_policy(&resolver_policy_path) {
-            Ok(policy) => policy,
-            Err(_) => {
+        let persisted = load_resolver_policy(&resolver_policy_path).ok();
+        let resolver = match persisted.and_then(|policy| AppResolver::new(policy).ok()) {
+            Some(resolver) => resolver,
+            None => {
                 let _ = fs::remove_file(&resolver_policy_path);
-                ResolverPolicy::default()
+                AppResolver::system().map_err(|error| error.to_string())?
             }
         };
-        let resolver = AppResolver::new(policy).map_err(|error| error.to_string())?;
         let providers = ProviderRegistry::default();
         let gutendex =
             GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
