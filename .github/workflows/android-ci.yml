@@ -4,6 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_prerelease:
+        description: Publish the built APK as a GitHub prerelease
+        required: false
+        type: boolean
+        default: false
+      tag:
+        description: Prerelease tag
+        required: false
+        default: v0.5.0-alpha.1
+
+permissions:
+  contents: write
 
 jobs:
   android:
@@ -47,9 +61,29 @@ jobs:
       - name: Build arm64 debug APK
         run: npm run tauri -- android build --debug --apk --target aarch64
 
-      - name: Upload APK
+      - name: Stage APK
+        shell: bash
+        run: |
+          APK="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          test -f "$APK"
+          cp "$APK" LuminaShelf-arm64-v8a-debug.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-android-arm64-debug
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: LuminaShelf-arm64-v8a-debug.apk
           if-no-files-found: error
+
+      - name: Publish GitHub prerelease
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" LuminaShelf-arm64-v8a-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "LuminaShelf ${RELEASE_TAG}" \
+            --notes "Early Android arm64 test build. This prerelease is intended for installation and real-device testing." \
+            --prerelease
