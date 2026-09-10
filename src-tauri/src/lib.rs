@@ -55,7 +55,9 @@ impl AppState {
             .origin
             .as_deref()
             .and_then(|value| normalize_origin(value).ok())
-            .unwrap_or_else(|| Url::parse(ZLIBRARY_CANDIDATES[0]).expect("valid Z-Library fallback"));
+            .unwrap_or_else(|| {
+                Url::parse(ZLIBRARY_CANDIDATES[0]).expect("valid Z-Library fallback")
+            });
         if zlibrary_config.origin.is_none() {
             zlibrary_config.origin = Some(initial_origin.to_string());
         }
@@ -203,9 +205,7 @@ async fn resolve_host(state: State<'_, AppState>, host: String) -> Result<Resolv
 }
 
 #[tauri::command]
-async fn zlibrary_status(
-    state: State<'_, AppState>,
-) -> Result<ZLibraryAccountStatus, String> {
+async fn zlibrary_status(state: State<'_, AppState>) -> Result<ZLibraryAccountStatus, String> {
     Ok(zlibrary_account_status(&state).await)
 }
 
@@ -265,9 +265,7 @@ async fn zlibrary_login(
 }
 
 #[tauri::command]
-async fn zlibrary_logout(
-    state: State<'_, AppState>,
-) -> Result<ZLibraryAccountStatus, String> {
+async fn zlibrary_logout(state: State<'_, AppState>) -> Result<ZLibraryAccountStatus, String> {
     state.zlibrary.clear_session().await;
     Ok(zlibrary_account_status(&state).await)
 }
