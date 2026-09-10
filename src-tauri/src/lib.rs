@@ -17,7 +17,8 @@ impl AppState {
     fn new() -> Result<Self, String> {
         let resolver = AppResolver::system().map_err(|error| error.to_string())?;
         let providers = ProviderRegistry::default();
-        let gutendex = GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
+        let gutendex =
+            GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
         providers.register(gutendex);
         Ok(Self {
             resolver,
@@ -146,7 +147,10 @@ async fn download_book(
         .await
         .map_err(|error| error.to_string())?;
 
-    let system_download_dir = app.path().download_dir().map_err(|error| error.to_string())?;
+    let system_download_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
     let destination_dir = download_dir
         .as_deref()
         .map(str::trim)
@@ -189,13 +193,8 @@ async fn download_book(
     let _ = monitor.await;
     result.map_err(|error| error.to_string())?;
 
-    let item = LibraryItem::inspect(
-        &destination,
-        Some(&title),
-        Some(provider_id),
-        Some(book_id),
-    )
-    .map_err(|error| error.to_string())?;
+    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
+        .map_err(|error| error.to_string())?;
     Ok(DownloadReceipt {
         path: destination,
         item,
