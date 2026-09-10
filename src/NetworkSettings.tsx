@@ -22,6 +22,18 @@ type ResolveResult = {
   mode: ResolverMode;
 };
 
+const STORAGE_KEY = "luminashelf.resolverPolicy";
+
+const systemPolicy: ResolverPolicy = {
+  mode: "system",
+  appHosts: {},
+  upstreamIp: null,
+  serverName: null,
+  dohPath: "/dns-query",
+  fallbackToSystem: true,
+  timeoutMs: 3000,
+};
+
 const modeLabels: Record<ResolverMode, string> = {
   system: "系统 DNS",
   app_hosts: "系统 DNS + App Hosts",
@@ -68,6 +80,15 @@ function needsServerName(mode: ResolverMode) {
   return mode === "dot" || mode === "doh";
 }
 
+function loadStoredPolicy(): ResolverPolicy | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) as ResolverPolicy : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function NetworkSettings({ networkStack }: { networkStack: string }) {
   const [draft, setDraft] = useState<ResolverPolicy | null>(null);
   const [hostOverrides, setHostOverrides] = useState("");
@@ -79,13 +100,37 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
   const [testResult, setTestResult] = useState<ResolveResult | null>(null);
 
   useEffect(() => {
-    invoke<ResolverPolicy>("resolver_policy")
+    const stored = loadStoredPolicy();
+    const initialize = stored
+      ? invoke<ResolverPolicy>("set_resolver_policy", { policy: stored })
+      : invoke<ResolverPolicy>("resolver_policy");
+
+    initialize
       .then((policy) => {
         setDraft(policy);
         setHostOverrides(formatHostOverrides(policy.appHosts));
       })
-      .catch((reason) => setError(String(reason)));
+      .catch(async (reason) => {
+        localStorage.removeItem(STORAGE_KEY);
+        setError(`保存的网络策略无法应用：${String(reason)}`);
+        try {
+          const policy = await invoke<ResolverPolicy>("resolver_policy");
+          setDraft(policy);
+          setHostOverrides(formatHostOverrides(policy.appHosts));
+        } catch (fallbackReason) {
+          setError(String(fallbackReason));
+        }
+      });
   }, []);
+
+  async function applyPolicy(policy: ResolverPolicy, successMessage: string) {
+    const saved = await invoke<ResolverPolicy>("set_resolver_policy", { policy });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    setDraft(saved);
+    setHostOverrides(formatHostOverrides(saved.appHosts));
+    setMessage(successMessage);
+    setTestResult(null);
+  }
 
   async function save() {
     if (!draft) return;
@@ -100,13 +145,23 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
         serverName: draft.serverName?.trim() || null,
         dohPath: draft.dohPath?.trim() || "/dns-query",
       };
-      const saved = await invoke<ResolverPolicy>("set_resolver_policy", { policy });
-      setDraft(saved);
-      setHostOverrides(formatHostOverrides(saved.appHosts));
-      setMessage("网络策略已应用到当前 Rust Core");
-      setTestResult(null);
+      await applyPolicy(policy, "网络策略已应用并保存");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetNetwork() {
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await applyPolicy(systemPolicy, "已恢复系统 DNS 默认策略");
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (reason) {
+      setError(String(reason));
     } finally {
       setSaving(false);
     }
@@ -191,10 +246,12 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
             </select>
           </label>
 
-          <label className="toggle-row">
-            <span>失败时回退系统 DNS<small>自定义 / DoT / DoH 失败时继续尝试系统解析</small></span>
-            <button type="button" className={`toggle ${draft.fallbackToSystem ? "on" : ""}`} onClick={() => setDraft((current) => current ? { ...current, fallbackToSystem: !current.fallbackToSystem } : current)} aria-pressed={draft.fallbackToSystem}><i /></button>
-          </label>
+          {needsUpstream(draft.mode) ? (
+            <label className="toggle-row">
+              <span>失败时回退系统 DNS<small>自定义 / DoT / DoH 失败时继续尝试系统解析</small></span>
+              <button type="button" className={`toggle ${draft.fallbackToSystem ? "on" : ""}`} onClick={() => setDraft((current) => current ? { ...current, fallbackToSystem: !current.fallbackToSystem } : current)} aria-pressed={draft.fallbackToSystem}><i /></button>
+            </label>
+          ) : null}
 
           <label className="stacked">
             <span>App Hosts<small>每行：域名 = IP, IP；支持 *.example.com</small></span>
@@ -203,6 +260,7 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
 
           <div className="network-actions">
             <button className="primary-button" disabled={saving} onClick={() => void save()}>{saving ? "应用中…" : "应用网络策略"}</button>
+            <button className="ghost-button" disabled={saving} onClick={() => void resetNetwork()}>恢复系统默认</button>
             <span className="network-stack-label">{networkStack}</span>
           </div>
           {message ? <div className="network-message success">{message}</div> : null}
