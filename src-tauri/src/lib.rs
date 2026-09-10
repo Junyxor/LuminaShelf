@@ -1,5 +1,5 @@
 use lumina_core::{
-    download::{DownloadConfig, SegmentedDownloader},
+    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::scan_folder,
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
     ProviderRegistry, SearchQuery, SearchResult,
@@ -161,7 +161,7 @@ async fn download_book(
     let downloader =
         SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
             .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(Default::default());
+    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
 
     let progress_app = app.clone();
     let progress_provider = provider_id.clone();
