@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import NetworkSettings from "./NetworkSettings";
 
 type CoreStatus = {
   name: string;
@@ -546,12 +547,7 @@ export default function App() {
             <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
           </article>
 
-          <article className="setting-card glass">
-            <span className="eyebrow">NETWORK</span><h3>网络与解析</h3>
-            <div className="readout"><span>当前网络栈</span><strong>{status?.networkStack ?? "Connecting…"}</strong></div>
-            <div className="readout"><span>解析策略</span><strong>System DNS</strong></div>
-            <p>DoH / DoT / App Hosts / 镜像测速已经属于 Core 能力，下一轮把 ResolverPolicy 和镜像控制真正接进这里。</p>
-          </article>
+          <NetworkSettings networkStack={status?.networkStack ?? "Tokio · Reqwest · Hickory"} />
 
           <article className="setting-card glass">
             <span className="eyebrow">CORE</span><h3>关于 LuminaShelf</h3>
