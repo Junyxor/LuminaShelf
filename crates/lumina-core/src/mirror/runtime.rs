@@ -32,13 +32,17 @@ impl MirrorRuntime {
             if raw.is_empty() {
                 continue;
             }
-            let origin = Url::parse(raw).with_context(|| format!("invalid mirror origin: {raw}"))?;
+            let origin =
+                Url::parse(raw).with_context(|| format!("invalid mirror origin: {raw}"))?;
             if origin.scheme() != "https" || origin.host_str().is_none() {
                 anyhow::bail!("mirror origin must be an HTTPS host: {raw}");
             }
             let label = origin.host_str().unwrap_or(raw).to_string();
-            self.registry
-                .upsert(MirrorEndpoint::new(label, origin, MirrorSourceKind::Builtin));
+            self.registry.upsert(MirrorEndpoint::new(
+                label,
+                origin,
+                MirrorSourceKind::Builtin,
+            ));
             added += 1;
         }
         Ok(added)
