@@ -22,8 +22,6 @@ type ResolveResult = {
   mode: ResolverMode;
 };
 
-const STORAGE_KEY = "luminashelf.resolverPolicy";
-
 const systemPolicy: ResolverPolicy = {
   mode: "system",
   appHosts: {},
@@ -80,15 +78,6 @@ function needsServerName(mode: ResolverMode) {
   return mode === "dot" || mode === "doh";
 }
 
-function loadStoredPolicy(): ResolverPolicy | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) as ResolverPolicy : null;
-  } catch {
-    return null;
-  }
-}
-
 export default function NetworkSettings({ networkStack }: { networkStack: string }) {
   const [draft, setDraft] = useState<ResolverPolicy | null>(null);
   const [hostOverrides, setHostOverrides] = useState("");
@@ -100,32 +89,16 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
   const [testResult, setTestResult] = useState<ResolveResult | null>(null);
 
   useEffect(() => {
-    const stored = loadStoredPolicy();
-    const initialize = stored
-      ? invoke<ResolverPolicy>("set_resolver_policy", { policy: stored })
-      : invoke<ResolverPolicy>("resolver_policy");
-
-    initialize
+    invoke<ResolverPolicy>("resolver_policy")
       .then((policy) => {
         setDraft(policy);
         setHostOverrides(formatHostOverrides(policy.appHosts));
       })
-      .catch(async (reason) => {
-        localStorage.removeItem(STORAGE_KEY);
-        setError(`保存的网络策略无法应用：${String(reason)}`);
-        try {
-          const policy = await invoke<ResolverPolicy>("resolver_policy");
-          setDraft(policy);
-          setHostOverrides(formatHostOverrides(policy.appHosts));
-        } catch (fallbackReason) {
-          setError(String(fallbackReason));
-        }
-      });
+      .catch((reason) => setError(String(reason)));
   }, []);
 
   async function applyPolicy(policy: ResolverPolicy, successMessage: string) {
     const saved = await invoke<ResolverPolicy>("set_resolver_policy", { policy });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
     setDraft(saved);
     setHostOverrides(formatHostOverrides(saved.appHosts));
     setMessage(successMessage);
@@ -159,7 +132,6 @@ export default function NetworkSettings({ networkStack }: { networkStack: string
     setMessage(null);
     try {
       await applyPolicy(systemPolicy, "已恢复系统 DNS 默认策略");
-      localStorage.removeItem(STORAGE_KEY);
     } catch (reason) {
       setError(String(reason));
     } finally {
