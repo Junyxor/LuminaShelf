@@ -13,8 +13,8 @@ pub mod user_state;
 
 pub use library::{LibraryFormat, LibraryItem};
 pub use mirror::{
-    MirrorEndpoint, MirrorRegistry, MirrorSourceKind, MirrorState, ProbeMetrics, ScoreWeights,
-    SourceCatalog, SourceDefinition,
+    MirrorEndpoint, MirrorRegistry, MirrorRuntime, MirrorSourceKind, MirrorState, ProbeMetrics,
+    ScoreWeights, SourceCatalog, SourceDefinition,
 };
 pub use network::{AppResolver, ReqwestResolver, ResolveResult, ResolverMode, ResolverPolicy};
 pub use provider::{
