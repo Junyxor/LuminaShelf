@@ -133,6 +133,7 @@ async fn download_book(
     book_id: String,
     title: String,
     format: BookFormat,
+    download_dir: Option<String>,
 ) -> Result<DownloadReceipt, String> {
     let url = state
         .providers
@@ -145,8 +146,13 @@ async fn download_book(
         .await
         .map_err(|error| error.to_string())?;
 
-    let download_dir = app.path().download_dir().map_err(|error| error.to_string())?;
-    let destination_dir = download_dir.join("LuminaShelf");
+    let system_download_dir = app.path().download_dir().map_err(|error| error.to_string())?;
+    let destination_dir = download_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
     let destination = unique_destination(&destination_dir, &title, format.extension());
     let downloader =
         SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
