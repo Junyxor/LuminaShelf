@@ -80,8 +80,8 @@ fn provider_descriptors(state: State<'_, AppState>) -> Vec<ProviderDescriptor> {
 }
 
 #[tauri::command]
-async fn resolver_policy(state: State<'_, AppState>) -> ResolverPolicy {
-    state.resolver.policy().await
+async fn resolver_policy(state: State<'_, AppState>) -> Result<ResolverPolicy, String> {
+    Ok(state.resolver.policy().await)
 }
 
 #[tauri::command]
