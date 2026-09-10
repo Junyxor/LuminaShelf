@@ -2,23 +2,44 @@ use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::scan_folder,
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
+    ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
+    ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
-use serde::Serialize;
+use reqwest::{redirect::Policy, Client};
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::RwLock;
+use url::Url;
+
+const ZLIBRARY_CANDIDATES: &[&str] = &[
+    "https://z-lib.gd",
+    "https://z-lib.gl",
+    "https://z-library.ec",
+    "https://zlib.bz",
+    "https://article.sk",
+    "https://articles.sk",
+];
 
 struct AppState {
     resolver: AppResolver,
     providers: ProviderRegistry,
     resolver_policy_path: PathBuf,
+    zlibrary: Arc<ZLibraryProvider>,
+    zlibrary_probe: Client,
+    zlibrary_config: RwLock<ZLibraryConfig>,
+    zlibrary_config_path: PathBuf,
 }
 
 impl AppState {
-    fn new(resolver_policy_path: PathBuf) -> Result<Self, String> {
+    fn new(config_dir: PathBuf) -> Result<Self, String> {
+        let resolver_policy_path = config_dir.join("resolver-policy.json");
         let persisted = load_resolver_policy(&resolver_policy_path).ok();
         let resolver = match persisted.and_then(|policy| AppResolver::new(policy).ok()) {
             Some(resolver) => resolver,
@@ -27,14 +48,49 @@ impl AppState {
                 AppResolver::system().map_err(|error| error.to_string())?
             }
         };
+
+        let zlibrary_config_path = config_dir.join("zlibrary.json");
+        let mut zlibrary_config = load_zlibrary_config(&zlibrary_config_path).unwrap_or_default();
+        let initial_origin = zlibrary_config
+            .origin
+            .as_deref()
+            .and_then(|value| normalize_origin(value).ok())
+            .unwrap_or_else(|| Url::parse(ZLIBRARY_CANDIDATES[0]).expect("valid Z-Library fallback"));
+        if zlibrary_config.origin.is_none() {
+            zlibrary_config.origin = Some(initial_origin.to_string());
+        }
+
         let providers = ProviderRegistry::default();
         let gutendex =
             GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
         providers.register(gutendex);
+
+        let zlibrary = Arc::new(
+            ZLibraryProvider::new(resolver.clone(), initial_origin)
+                .map_err(|error| error.to_string())?,
+        );
+        providers.register_shared(zlibrary.clone());
+
+        let zlibrary_probe = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .pool_max_idle_per_host(4)
+            .tcp_nodelay(true)
+            .redirect(Policy::limited(4))
+            .user_agent("LuminaShelf/0.5 zlibrary-health")
+            .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())))
+            .build()
+            .map_err(|error| error.to_string())?;
+
         Ok(Self {
             resolver,
             providers,
             resolver_policy_path,
+            zlibrary,
+            zlibrary_probe,
+            zlibrary_config: RwLock::new(zlibrary_config),
+            zlibrary_config_path,
         })
     }
 }
@@ -62,6 +118,36 @@ struct DownloadProgressEvent {
 struct DownloadReceipt {
     path: PathBuf,
     item: LibraryItem,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ZLibraryOriginMode {
+    #[default]
+    Automatic,
+    Manual,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ZLibraryConfig {
+    origin: Option<String>,
+    origin_mode: ZLibraryOriginMode,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZLibraryAccountStatus {
+    signed_in: bool,
+    origin: String,
+    origin_mode: ZLibraryOriginMode,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZLibraryLoginResult {
+    status: ZLibraryAccountStatus,
+    profile: Option<ZLibraryProfile>,
 }
 
 #[tauri::command]
@@ -112,6 +198,97 @@ async fn resolve_host(state: State<'_, AppState>, host: String) -> Result<Resolv
     state
         .resolver
         .resolve(host)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn zlibrary_status(
+    state: State<'_, AppState>,
+) -> Result<ZLibraryAccountStatus, String> {
+    Ok(zlibrary_account_status(&state).await)
+}
+
+#[tauri::command]
+async fn zlibrary_login(
+    state: State<'_, AppState>,
+    email: String,
+    password: String,
+    automatic: bool,
+    origin: Option<String>,
+) -> Result<ZLibraryLoginResult, String> {
+    let email = email.trim();
+    if email.is_empty() || password.is_empty() {
+        return Err("email and password are required".to_string());
+    }
+
+    let (selected_origin, origin_mode) = if automatic {
+        (
+            select_automatic_zlibrary_origin(&state).await?,
+            ZLibraryOriginMode::Automatic,
+        )
+    } else {
+        let requested = origin
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "manual EAPI origin is required".to_string())?;
+        let origin = normalize_origin(requested)?;
+        probe_zlibrary_origin(&state, &origin).await?;
+        (origin, ZLibraryOriginMode::Manual)
+    };
+
+    let config = ZLibraryConfig {
+        origin: Some(selected_origin.to_string()),
+        origin_mode,
+    };
+    save_zlibrary_config(&state.zlibrary_config_path, &config)?;
+    *state.zlibrary_config.write().await = config;
+
+    state.zlibrary.clear_session().await;
+    state
+        .zlibrary
+        .set_origin(selected_origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    state
+        .zlibrary
+        .login_direct(email, &password)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let profile = state.zlibrary.profile().await.ok();
+    Ok(ZLibraryLoginResult {
+        status: zlibrary_account_status(&state).await,
+        profile,
+    })
+}
+
+#[tauri::command]
+async fn zlibrary_logout(
+    state: State<'_, AppState>,
+) -> Result<ZLibraryAccountStatus, String> {
+    state.zlibrary.clear_session().await;
+    Ok(zlibrary_account_status(&state).await)
+}
+
+#[tauri::command]
+async fn zlibrary_profile(state: State<'_, AppState>) -> Result<ZLibraryProfile, String> {
+    state
+        .zlibrary
+        .profile()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn zlibrary_history(
+    state: State<'_, AppState>,
+    page: Option<u32>,
+) -> Result<ZLibraryHistoryPage, String> {
+    state
+        .zlibrary
+        .download_history(page.unwrap_or(1).max(1))
         .await
         .map_err(|error| error.to_string())
 }
@@ -250,6 +427,83 @@ async fn download_book(
     })
 }
 
+async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
+    let config = state.zlibrary_config.read().await.clone();
+    ZLibraryAccountStatus {
+        signed_in: state.zlibrary.has_session().await,
+        origin: state.zlibrary.origin().await.to_string(),
+        origin_mode: config.origin_mode,
+    }
+}
+
+async fn select_automatic_zlibrary_origin(state: &AppState) -> Result<Url, String> {
+    let configured = state.zlibrary_config.read().await.origin.clone();
+    let mut candidates = Vec::with_capacity(ZLIBRARY_CANDIDATES.len() + 1);
+    if let Some(origin) = configured {
+        candidates.push(origin);
+    }
+    candidates.extend(ZLIBRARY_CANDIDATES.iter().map(|value| (*value).to_string()));
+
+    let mut seen = HashSet::new();
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let Ok(origin) = normalize_origin(&candidate) else {
+            continue;
+        };
+        let key = origin.to_string();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        match probe_zlibrary_origin(state, &origin).await {
+            Ok(()) => return Ok(origin),
+            Err(error) => failures.push(format!("{}: {error}", origin.host_str().unwrap_or("?"))),
+        }
+    }
+
+    Err(format!(
+        "no usable Z-Library EAPI origin found ({})",
+        failures.join("; ")
+    ))
+}
+
+async fn probe_zlibrary_origin(state: &AppState, origin: &Url) -> Result<(), String> {
+    let endpoint = origin
+        .join("/eapi/info/domains")
+        .map_err(|error| format!("build EAPI probe URL: {error}"))?;
+    let response = state
+        .zlibrary_probe
+        .get(endpoint)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| format!("EAPI probe failed: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("read EAPI probe: {error}"))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| format!("expected EAPI JSON, received non-JSON HTTP {status}"))?;
+    if value.is_null() {
+        return Err("EAPI probe returned an empty JSON value".to_string());
+    }
+    Ok(())
+}
+
+fn normalize_origin(value: &str) -> Result<Url, String> {
+    let mut url = Url::parse(value).map_err(|error| format!("invalid EAPI origin: {error}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("EAPI origin must be an HTTPS host".to_string());
+    }
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
 fn load_resolver_policy(path: &Path) -> Result<ResolverPolicy, String> {
     if !path.exists() {
         return Ok(ResolverPolicy::default());
@@ -265,6 +519,23 @@ fn save_resolver_policy(path: &Path, policy: &ResolverPolicy) -> Result<(), Stri
     let bytes = serde_json::to_vec_pretty(policy)
         .map_err(|error| format!("encode resolver policy: {error}"))?;
     fs::write(path, bytes).map_err(|error| format!("write resolver policy: {error}"))
+}
+
+fn load_zlibrary_config(path: &Path) -> Result<ZLibraryConfig, String> {
+    if !path.exists() {
+        return Ok(ZLibraryConfig::default());
+    }
+    let bytes = fs::read(path).map_err(|error| format!("read Z-Library config: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("decode Z-Library config: {error}"))
+}
+
+fn save_zlibrary_config(path: &Path, config: &ZLibraryConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("create config directory: {error}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(config)
+        .map_err(|error| format!("encode Z-Library config: {error}"))?;
+    fs::write(path, bytes).map_err(|error| format!("write Z-Library config: {error}"))
 }
 
 fn unique_destination(directory: &Path, title: &str, extension: &str) -> PathBuf {
@@ -304,12 +575,11 @@ fn sanitize_filename(value: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let policy_path = app
+            let config_dir = app
                 .path()
                 .app_config_dir()
-                .map_err(|error| std::io::Error::other(error.to_string()))?
-                .join("resolver-policy.json");
-            let state = AppState::new(policy_path).map_err(std::io::Error::other)?;
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
             app.manage(state);
             Ok(())
         })
@@ -319,6 +589,11 @@ pub fn run() {
             resolver_policy,
             set_resolver_policy,
             resolve_host,
+            zlibrary_status,
+            zlibrary_login,
+            zlibrary_logout,
+            zlibrary_profile,
+            zlibrary_history,
             search_books,
             book_details,
             scan_library,
