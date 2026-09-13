@@ -1,9 +1,9 @@
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
+    download::{DownloadConfig, DownloadProgress, DownloadState, SegmentedDownloader},
     library::scan_folder,
-    AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
-    ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, PersistedDownloadTask,
+    ProviderDescriptor, ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy,
+    SearchQuery, SearchResult, StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
 use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ const ZLIBRARY_CANDIDATES: &[&str] = &[
 struct AppState {
     resolver: AppResolver,
     providers: ProviderRegistry,
+    store: StateStore,
     resolver_policy_path: PathBuf,
     zlibrary: Arc<ZLibraryProvider>,
     zlibrary_probe: Client,
@@ -39,6 +40,12 @@ struct AppState {
 
 impl AppState {
     fn new(config_dir: PathBuf) -> Result<Self, String> {
+        let store = StateStore::open(config_dir.join("state.sqlite3"))
+            .map_err(|error| format!("open app state: {error}"))?;
+        store
+            .recover_incomplete_downloads()
+            .map_err(|error| format!("recover download queue: {error}"))?;
+
         let resolver_policy_path = config_dir.join("resolver-policy.json");
         let persisted = load_resolver_policy(&resolver_policy_path).ok();
         let resolver = match persisted.and_then(|policy| AppResolver::new(policy).ok()) {
@@ -88,6 +95,7 @@ impl AppState {
         Ok(Self {
             resolver,
             providers,
+            store,
             resolver_policy_path,
             zlibrary,
             zlibrary_probe,
@@ -109,6 +117,7 @@ struct CoreStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadProgressEvent {
+    task_id: String,
     provider_id: String,
     book_id: String,
     downloaded_bytes: u64,
@@ -165,6 +174,22 @@ fn core_status() -> CoreStatus {
 #[tauri::command]
 fn provider_descriptors(state: State<'_, AppState>) -> Vec<ProviderDescriptor> {
     state.providers.descriptors()
+}
+
+#[tauri::command]
+fn download_tasks(state: State<'_, AppState>) -> Result<Vec<PersistedDownloadTask>, String> {
+    state
+        .store
+        .list_download_tasks()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_download_task(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
+    state
+        .store
+        .remove_download_task(&task_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -360,16 +385,13 @@ async fn download_book(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<DownloadReceipt, String> {
-    let url = state
-        .providers
-        .acquisition_url(&provider_id, &book_id, format)
-        .await
-        .map_err(|error| error.to_string())?;
-    let headers = state
-        .providers
-        .download_headers(&provider_id)
-        .await
-        .map_err(|error| error.to_string())?;
+    let task_id = format!("{provider_id}:{book_id}:{}", format.extension());
+    let existing = state
+        .store
+        .list_download_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.id == task_id);
 
     let system_download_dir = app
         .path()
@@ -381,33 +403,135 @@ async fn download_book(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = resumable_destination(
-        &destination_dir,
-        &title,
-        format.extension(),
-        &provider_id,
-        &book_id,
-    );
-    let downloader =
-        SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
+    let destination = existing
+        .as_ref()
+        .map(|task| task.destination.clone())
+        .unwrap_or_else(|| {
+            resumable_destination(
+                &destination_dir,
+                &title,
+                format.extension(),
+                &provider_id,
+                &book_id,
+            )
+        });
+    let resume_downloaded = existing.as_ref().map_or(0, |task| task.downloaded_bytes);
+    let resume_total = existing.as_ref().and_then(|task| task.total_bytes);
+
+    if existing.is_none() {
+        let task = PersistedDownloadTask::new(
+            task_id.clone(),
+            provider_id.clone(),
+            book_id.clone(),
+            title.clone(),
+            format,
+            destination.clone(),
+        );
+        state
+            .store
+            .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
+    }
+    state
+        .store
+        .update_download_task(
+            &task_id,
+            DownloadState::Connecting,
+            resume_downloaded,
+            resume_total,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let url = match state
+        .providers
+        .acquisition_url(&provider_id, &book_id, format)
+        .await
+    {
+        Ok(url) => url,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state.store.update_download_task(
+                &task_id,
+                DownloadState::Failed,
+                resume_downloaded,
+                resume_total,
+                Some(&message),
+            );
+            return Err(message);
+        }
+    };
+    let headers = match state.providers.download_headers(&provider_id).await {
+        Ok(headers) => headers,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state.store.update_download_task(
+                &task_id,
+                DownloadState::Failed,
+                resume_downloaded,
+                resume_total,
+                Some(&message),
+            );
+            return Err(message);
+        }
+    };
+
+    let downloader = match SegmentedDownloader::with_resolver(
+        state.resolver.clone(),
+        DownloadConfig::default(),
+    ) {
+        Ok(downloader) => downloader,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = state.store.update_download_task(
+                &task_id,
+                DownloadState::Failed,
+                resume_downloaded,
+                resume_total,
+                Some(&message),
+            );
+            return Err(message);
+        }
+    };
+    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress {
+        downloaded_bytes: resume_downloaded,
+        total_bytes: resume_total,
+    });
 
     let progress_app = app.clone();
+    let progress_store = state.store.clone();
+    let progress_task = task_id.clone();
     let progress_provider = provider_id.clone();
     let progress_book = book_id.clone();
     let monitor = tauri::async_runtime::spawn(async move {
+        let mut last_persisted = resume_downloaded;
         while rx.changed().await.is_ok() {
             let progress = *rx.borrow_and_update();
             let _ = progress_app.emit(
                 "download-progress",
                 DownloadProgressEvent {
+                    task_id: progress_task.clone(),
                     provider_id: progress_provider.clone(),
                     book_id: progress_book.clone(),
                     downloaded_bytes: progress.downloaded_bytes,
                     total_bytes: progress.total_bytes,
                 },
             );
+            let reached_end = progress
+                .total_bytes
+                .is_some_and(|total| progress.downloaded_bytes >= total);
+            if progress.downloaded_bytes.saturating_sub(last_persisted) >= 1024 * 1024
+                || reached_end
+            {
+                let _ = progress_store.update_download_task(
+                    &progress_task,
+                    DownloadState::Downloading,
+                    progress.downloaded_bytes,
+                    progress.total_bytes,
+                    None,
+                );
+                last_persisted = progress.downloaded_bytes;
+            }
         }
     });
 
@@ -421,10 +545,49 @@ async fn download_book(
         )
         .await;
     let _ = monitor.await;
-    result.map_err(|error| error.to_string())?;
 
-    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
+    if let Err(error) = result {
+        let message = error.to_string();
+        let latest = state
+            .store
+            .list_download_tasks()
+            .ok()
+            .and_then(|tasks| tasks.into_iter().find(|task| task.id == task_id));
+        let downloaded = latest
+            .as_ref()
+            .map_or(resume_downloaded, |task| task.downloaded_bytes);
+        let total = latest.as_ref().and_then(|task| task.total_bytes).or(resume_total);
+        let _ = state.store.update_download_task(
+            &task_id,
+            DownloadState::Failed,
+            downloaded,
+            total,
+            Some(&message),
+        );
+        return Err(message);
+    }
+
+    let item = LibraryItem::inspect(
+        &destination,
+        Some(&title),
+        Some(provider_id),
+        Some(book_id),
+    )
+    .map_err(|error| error.to_string())?;
+    let completed_bytes = fs::metadata(&destination)
+        .map(|metadata| metadata.len())
+        .unwrap_or(resume_downloaded);
+    state
+        .store
+        .update_download_task(
+            &task_id,
+            DownloadState::Completed,
+            completed_bytes,
+            Some(completed_bytes),
+            None,
+        )
         .map_err(|error| error.to_string())?;
+
     Ok(DownloadReceipt {
         path: destination,
         item,
@@ -589,6 +752,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_status,
             provider_descriptors,
+            download_tasks,
+            remove_download_task,
             resolver_policy,
             set_resolver_policy,
             resolve_host,
