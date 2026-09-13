@@ -476,23 +476,22 @@ async fn download_book(
         }
     };
 
-    let downloader = match SegmentedDownloader::with_resolver(
-        state.resolver.clone(),
-        DownloadConfig::default(),
-    ) {
-        Ok(downloader) => downloader,
-        Err(error) => {
-            let message = error.to_string();
-            let _ = state.store.update_download_task(
-                &task_id,
-                DownloadState::Failed,
-                resume_downloaded,
-                resume_total,
-                Some(&message),
-            );
-            return Err(message);
-        }
-    };
+    let downloader =
+        match SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
+        {
+            Ok(downloader) => downloader,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = state.store.update_download_task(
+                    &task_id,
+                    DownloadState::Failed,
+                    resume_downloaded,
+                    resume_total,
+                    Some(&message),
+                );
+                return Err(message);
+            }
+        };
     let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress {
         downloaded_bytes: resume_downloaded,
         total_bytes: resume_total,
@@ -556,7 +555,10 @@ async fn download_book(
         let downloaded = latest
             .as_ref()
             .map_or(resume_downloaded, |task| task.downloaded_bytes);
-        let total = latest.as_ref().and_then(|task| task.total_bytes).or(resume_total);
+        let total = latest
+            .as_ref()
+            .and_then(|task| task.total_bytes)
+            .or(resume_total);
         let _ = state.store.update_download_task(
             &task_id,
             DownloadState::Failed,
@@ -567,13 +569,8 @@ async fn download_book(
         return Err(message);
     }
 
-    let item = LibraryItem::inspect(
-        &destination,
-        Some(&title),
-        Some(provider_id),
-        Some(book_id),
-    )
-    .map_err(|error| error.to_string())?;
+    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
+        .map_err(|error| error.to_string())?;
     let completed_bytes = fs::metadata(&destination)
         .map(|metadata| metadata.len())
         .unwrap_or(resume_downloaded);
