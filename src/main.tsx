@@ -5,6 +5,7 @@ import "./styles.css";
 import "./network-settings.css";
 import "./account.css";
 import "./material-native.css";
+import "./download-queue.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
