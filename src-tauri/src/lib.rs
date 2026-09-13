@@ -1,9 +1,11 @@
 mod downloads;
+mod library_state;
 
 use downloads::{
     cancel_download, enqueue_download, list_downloads, pause_download, remove_download,
     resume_download, retry_download,
 };
+use library_state::{list_library, scan_library_persisted};
 use lumina_core::{
     library::scan_folder, AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem,
     ProviderDescriptor, ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy,
@@ -509,6 +511,8 @@ pub fn run() {
             search_books,
             book_details,
             scan_library,
+            list_library,
+            scan_library_persisted,
             list_downloads,
             enqueue_download,
             pause_download,
