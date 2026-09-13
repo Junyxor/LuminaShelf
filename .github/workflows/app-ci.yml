@@ -5,34 +5,15 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   app:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: One-shot live transfer patch
-        if: github.head_ref == 'feat/android-daily-driver' && github.actor != 'github-actions[bot]'
-        run: |
-          python3 scripts/live_control_patch.py
-          cargo fmt --all
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/src/lib.rs src/App.tsx
-          if ! git diff --cached --quiet; then
-            git commit -m "feat: add live pause and cancel controls"
-            git push origin HEAD:feat/android-daily-driver
-          fi
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux webview dependencies
         run: |
