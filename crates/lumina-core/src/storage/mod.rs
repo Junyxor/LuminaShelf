@@ -326,7 +326,8 @@ impl StateStore {
                 task.destination.to_string_lossy(),
                 task.state.as_str(),
                 task.downloaded_bytes.min(i64::MAX as u64) as i64,
-                task.total_bytes.map(|value| value.min(i64::MAX as u64) as i64),
+                task.total_bytes
+                    .map(|value| value.min(i64::MAX as u64) as i64),
                 task.error,
                 task.created_at_unix_ms,
                 task.updated_at_unix_ms,
