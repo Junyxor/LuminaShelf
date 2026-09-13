@@ -1,0 +1,49 @@
+.download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.primary-button.compact,
+.ghost-button.compact {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  font-size: 12px;
+}
+
+.task-state.connecting,
+.task-state.queued,
+.task-state.verifying {
+  color: var(--md-sys-color-primary, #83a3ca);
+}
+
+.task-state.paused,
+.task-state.cancelled {
+  color: var(--md-sys-color-on-surface-variant, #83a3ca);
+}
+
+@media (max-width: 620px) {
+  .download-row {
+    padding: 14px;
+  }
+
+  .download-head {
+    align-items: flex-start;
+  }
+
+  .download-foot {
+    flex-direction: column;
+  }
+
+  .download-foot span:last-child {
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .download-actions {
+    justify-content: flex-start;
+  }
+}
