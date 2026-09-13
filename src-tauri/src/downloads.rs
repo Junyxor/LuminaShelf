@@ -1,4 +1,4 @@
-use super::{unique_destination, AppState};
+use super::{library_state::managed_library_dir, unique_destination, AppState};
 use lumina_core::{
     download::{
         DownloadConfig, DownloadProgress, DownloadState, DownloadTask, SegmentedDownloader,
@@ -407,16 +407,7 @@ pub(super) async fn enqueue_download(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<DownloadTaskSnapshot, String> {
-    let system_download_dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    let destination_dir = download_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
+    let destination_dir = download_destination_dir(&app, download_dir.as_deref())?;
     let destination = unique_destination(&destination_dir, &title, format.extension());
     let placeholder = Url::parse("about:blank").expect("valid placeholder URL");
     let task = DownloadTask::new(
@@ -472,6 +463,30 @@ pub(super) async fn remove_download(
     task_id: String,
 ) -> Result<bool, String> {
     manager(&app, &state)?.remove(&task_id).await
+}
+
+fn download_destination_dir(
+    app: &AppHandle,
+    requested: Option<&str>,
+) -> Result<PathBuf, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = requested;
+        return managed_library_dir(app);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let system_download_dir = app
+            .path()
+            .download_dir()
+            .map_err(|error| error.to_string())?;
+        Ok(requested
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| system_download_dir.join("LuminaShelf")))
+    }
 }
 
 async fn remove_partial_files(task: &DownloadTask) {
