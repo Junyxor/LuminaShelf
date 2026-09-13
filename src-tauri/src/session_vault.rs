@@ -9,7 +9,8 @@ pub fn supported() -> bool {
 
 #[cfg(target_os = "android")]
 fn prepare_store() -> Result<(), String> {
-    keyring::use_native_store(false).map_err(|error| format!("initialize Android secure store: {error}"))
+    keyring::use_native_store(false)
+        .map_err(|error| format!("initialize Android secure store: {error}"))
 }
 
 #[cfg(target_os = "android")]

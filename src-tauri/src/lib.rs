@@ -302,7 +302,9 @@ async fn zlibrary_status(state: State<'_, AppState>) -> Result<ZLibraryAccountSt
 }
 
 #[tauri::command]
-async fn zlibrary_restore_session(state: State<'_, AppState>) -> Result<ZLibraryRestoreResult, String> {
+async fn zlibrary_restore_session(
+    state: State<'_, AppState>,
+) -> Result<ZLibraryRestoreResult, String> {
     if state.zlibrary.has_session().await {
         return Ok(ZLibraryRestoreResult {
             status: zlibrary_account_status(&state).await,
