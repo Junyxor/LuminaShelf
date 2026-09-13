@@ -381,7 +381,13 @@ async fn download_book(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = unique_destination(&destination_dir, &title, format.extension());
+    let destination = resumable_destination(
+        &destination_dir,
+        &title,
+        format.extension(),
+        &provider_id,
+        &book_id,
+    );
     let downloader =
         SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
             .map_err(|error| error.to_string())?;
@@ -536,19 +542,18 @@ fn save_zlibrary_config(path: &Path, config: &ZLibraryConfig) -> Result<(), Stri
     fs::write(path, bytes).map_err(|error| format!("write Z-Library config: {error}"))
 }
 
-fn unique_destination(directory: &Path, title: &str, extension: &str) -> PathBuf {
-    let base = sanitize_filename(title);
-    let first = directory.join(format!("{base}.{extension}"));
-    if !first.exists() {
-        return first;
-    }
-    for suffix in 2..10_000 {
-        let candidate = directory.join(format!("{base} ({suffix}).{extension}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    directory.join(format!("{base}-{}.{}", std::process::id(), extension))
+fn resumable_destination(
+    directory: &Path,
+    title: &str,
+    extension: &str,
+    provider_id: &str,
+    book_id: &str,
+) -> PathBuf {
+    let title = sanitize_filename(title);
+    let title = title.chars().take(80).collect::<String>();
+    let identity = sanitize_filename(&format!("{provider_id}-{book_id}"));
+    let identity = identity.chars().take(36).collect::<String>();
+    directory.join(format!("{title} [{identity}].{extension}"))
 }
 
 fn sanitize_filename(value: &str) -> String {
