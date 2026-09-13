@@ -117,6 +117,12 @@ type AppSettings = {
   recursiveLibraryScan: boolean;
 };
 
+type ZLibraryRestoreResult = {
+  status: ZLibraryAccountStatus;
+  restored: boolean;
+  warning?: string | null;
+};
+
 type Page = "home" | "search" | "downloads" | "library" | "account" | "settings";
 type MainPage = Extract<Page, "home" | "search" | "downloads" | "library">;
 
@@ -235,14 +241,17 @@ export default function App() {
     Promise.all([
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
-      invoke<ZLibraryAccountStatus>("zlibrary_status"),
+      invoke<ZLibraryRestoreResult>("zlibrary_restore_session"),
       invoke<PersistedDownloadTask[]>("download_tasks"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus, persistedDownloads]) => {
+      .then(([nextStatus, nextProviders, zlibraryRestore, persistedDownloads]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
-        setZlibraryStatus(nextZlibraryStatus);
+        setZlibraryStatus(zlibraryRestore.status);
         setDownloads(restoreDownloads(persistedDownloads));
+        if (zlibraryRestore.warning) {
+          setError(`安全 Session 恢复失败：${zlibraryRestore.warning}`);
+        }
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -433,7 +442,6 @@ export default function App() {
         return;
       }
       setError(message);
-
     }
   }
 
