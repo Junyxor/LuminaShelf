@@ -5,7 +5,7 @@ use downloads::{
     cancel_download, enqueue_download, list_downloads, pause_download, remove_download,
     resume_download, retry_download,
 };
-use library_state::{list_library, scan_library_persisted};
+use library_state::{import_library_files, list_library, scan_library_persisted};
 use lumina_core::{
     library::scan_folder, AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem,
     ProviderDescriptor, ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy,
@@ -486,8 +486,11 @@ fn sanitize_filename(value: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_android_fs::init());
+
+    builder
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -513,6 +516,7 @@ pub fn run() {
             scan_library,
             list_library,
             scan_library_persisted,
+            import_library_files,
             list_downloads,
             enqueue_download,
             pause_download,
