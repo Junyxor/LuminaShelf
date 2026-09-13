@@ -1,9 +1,13 @@
+mod downloads;
+
+use downloads::{
+    cancel_download, enqueue_download, list_downloads, pause_download, remove_download,
+    resume_download, retry_download,
+};
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
-    library::scan_folder,
-    AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
-    ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    library::scan_folder, AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem,
+    ProviderDescriptor, ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy,
+    SearchQuery, SearchResult, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
 use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
@@ -14,7 +18,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{Manager, State};
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -104,22 +108,6 @@ struct CoreStatus {
     version: &'static str,
     rust_core: bool,
     network_stack: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadProgressEvent {
-    provider_id: String,
-    book_id: String,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadReceipt {
-    path: PathBuf,
-    item: LibraryItem,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -350,81 +338,6 @@ fn scan_library(
         .collect()
 }
 
-#[tauri::command]
-async fn download_book(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    provider_id: String,
-    book_id: String,
-    title: String,
-    format: BookFormat,
-    download_dir: Option<String>,
-) -> Result<DownloadReceipt, String> {
-    let url = state
-        .providers
-        .acquisition_url(&provider_id, &book_id, format)
-        .await
-        .map_err(|error| error.to_string())?;
-    let headers = state
-        .providers
-        .download_headers(&provider_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let system_download_dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    let destination_dir = download_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = unique_destination(&destination_dir, &title, format.extension());
-    let downloader =
-        SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
-            .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
-
-    let progress_app = app.clone();
-    let progress_provider = provider_id.clone();
-    let progress_book = book_id.clone();
-    let monitor = tauri::async_runtime::spawn(async move {
-        while rx.changed().await.is_ok() {
-            let progress = *rx.borrow_and_update();
-            let _ = progress_app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    provider_id: progress_provider.clone(),
-                    book_id: progress_book.clone(),
-                    downloaded_bytes: progress.downloaded_bytes,
-                    total_bytes: progress.total_bytes,
-                },
-            );
-        }
-    });
-
-    let result = downloader
-        .download_to_with_context(
-            url,
-            destination.clone(),
-            headers,
-            Some(format!("{provider_id}:{book_id}")),
-            tx,
-        )
-        .await;
-    let _ = monitor.await;
-    result.map_err(|error| error.to_string())?;
-
-    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
-        .map_err(|error| error.to_string())?;
-    Ok(DownloadReceipt {
-        path: destination,
-        item,
-    })
-}
-
 async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
     let config = state.zlibrary_config.read().await.clone();
     ZLibraryAccountStatus {
@@ -595,7 +508,13 @@ pub fn run() {
             search_books,
             book_details,
             scan_library,
-            download_book
+            list_downloads,
+            enqueue_download,
+            pause_download,
+            resume_download,
+            cancel_download,
+            retry_download,
+            remove_download
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LuminaShelf");
