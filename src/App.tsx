@@ -123,6 +123,8 @@ const defaultSettings: AppSettings = {
   recursiveLibraryScan: true,
 };
 
+const isAndroid = /Android/i.test(navigator.userAgent);
+
 function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem("luminashelf.settings");
@@ -391,7 +393,7 @@ export default function App() {
         bookId: book.id,
         title: book.title,
         format,
-        downloadDir: settings.downloadDirectory.trim() || null,
+        downloadDir: isAndroid ? null : settings.downloadDirectory.trim() || null,
       });
       setDownloads((current) => ({ ...current, [task.id]: task }));
     } catch (reason) {
@@ -413,6 +415,19 @@ export default function App() {
         recursive: settings.recursiveLibraryScan,
         maxItems: 1000,
       });
+      setLibraryItems(items);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  async function importLibraryFiles() {
+    setLibraryLoading(true);
+    setError(null);
+    try {
+      const items = await invoke<LibraryItem[]>("import_library_files");
       setLibraryItems(items);
     } catch (reason) {
       setError(String(reason));
@@ -583,11 +598,18 @@ export default function App() {
     return (
       <>
         <section className="search-panel glass">
-          <div className="library-toolbar">
-            <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
-            <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
-          </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 扫描结果会保存到本地书架</div>
+          {isAndroid ? (
+            <div className="library-toolbar android-import-toolbar">
+              <div className="native-import-copy"><strong>从设备导入电子书</strong><small>使用 Android 系统文件选择器，可多选 EPUB / PDF / MOBI / AZW3 / TXT / CBZ / DJVU。</small></div>
+              <button className="primary-button" disabled={libraryLoading} onClick={() => void importLibraryFiles()}>{libraryLoading ? "导入中…" : "从设备导入"}</button>
+            </div>
+          ) : (
+            <div className="library-toolbar">
+              <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
+              <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
+            </div>
+          )}
+          <div className="search-hint">{isAndroid ? "选中的文件会复制进 LuminaShelf 管理的应用书库，不需要广泛存储权限。" : `${settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 扫描结果会保存到本地书架`}</div>
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
@@ -599,7 +621,7 @@ export default function App() {
             ))}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书；登记后重启应用也会保留。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>{isAndroid ? "从设备导入电子书，或者从搜索页下载一本书；登记后重启应用也会保留。" : "填写目录后扫描，或者从搜索页下载一本书；登记后重启应用也会保留。"}</p></section>
         )}
       </>
     );
@@ -622,9 +644,15 @@ export default function App() {
 
           <article className="setting-card glass">
             <span className="eyebrow">DOWNLOAD & LIBRARY</span><h3>下载与书库</h3>
-            <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
-            <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
-            <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+            {isAndroid ? (
+              <div className="android-storage-note"><strong>Android 应用管理存储</strong><span>下载和导入的电子书由 LuminaShelf 管理；导入使用系统文件选择器，不要求访问整个存储空间。</span></div>
+            ) : (
+              <>
+                <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
+                <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
+                <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+              </>
+            )}
           </article>
 
           <NetworkSettings networkStack={status?.networkStack ?? "Tokio · Reqwest · Hickory"} />
