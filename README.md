@@ -15,6 +15,7 @@ The repository has moved beyond the original core-only milestone. The following 
 - deterministic per-book download targets so failed downloads reuse the same partial file
 - persistent SQLite download queue with progress/state metadata
 - interrupted active downloads recovered as paused tasks after restart
+- live pause / cancel controls backed by a Rust transfer-control channel
 - download-center retry/continue and task-record removal actions
 - local ebook inspection and folder scanning
 - app-local System DNS / App Hosts / custom DNS / DoT / DoH resolver policy
@@ -51,6 +52,7 @@ BookProvider registry
         ├── Mirror runtime / scoring
         ├── AppResolver (Hosts / DNS / DoH / DoT)
         ├── Native resumable segmented downloader
+        ├── Live transfer control (pause / cancel)
         ├── SQLite task / account / reading state
         └── Local library inspection
 ```
@@ -72,7 +74,9 @@ For large files, the downloader can use bounded concurrent HTTP Range segments a
 
 The task queue itself is persisted in the app SQLite database. It stores non-secret task metadata only: provider/book identity, format, destination path, state, progress and errors. Temporary acquisition URLs, provider headers and session secrets are not written into the queue. If the app exits while a transfer is queued/connecting/downloading/verifying, that task is recovered as `paused` on the next launch. Pressing Continue requests a fresh provider URL and resumes against the existing file/segment manifest.
 
-Explicit pause/cancel while the process remains running and a true Android background-transfer lifecycle are still future milestones.
+While a transfer is actively downloading, Pause or Cancel sends a Rust-side control signal. The Tauri bridge drops the active download future, which stops the current network work without deleting the partial file or segment manifest. A later Continue obtains a fresh provider acquisition URL and resumes from the preserved partial state. Cancel marks the task as cancelled but deliberately keeps partial data so the user can continue later unless they remove it separately.
+
+A true Android background-transfer lifecycle / foreground-service integration is still a future milestone.
 
 ## Build checks
 
@@ -89,9 +93,8 @@ Android builds are also validated by `.github/workflows/android-ci.yml`.
 
 ## Next milestones
 
-1. Add explicit pause / cancel controls to the live Rust transfer engine.
-2. Add Android background-transfer lifecycle / foreground-service behavior where appropriate.
-3. Add Android secure credential/session storage so users do not have to log in after every restart.
-4. Replace free-form mobile filesystem path inputs with platform-native directory/file selection where possible.
-5. Add EPUB reading first, then PDF reading/open-with integration.
-6. Continue breaking the large React shell into focused mobile-friendly screens/components.
+1. Add Android background-transfer lifecycle / foreground-service behavior where appropriate.
+2. Add Android secure credential/session storage so users do not have to log in after every restart.
+3. Replace free-form mobile filesystem path inputs with platform-native directory/file selection where possible.
+4. Add EPUB reading first, then PDF reading/open-with integration.
+5. Continue breaking the large React shell into focused mobile-friendly screens/components.
