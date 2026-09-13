@@ -1,5 +1,8 @@
 use lumina_core::{library::scan_folder, LibraryFormat, LibraryItem, LibraryStore};
-use std::{path::{Path, PathBuf}, sync::OnceLock};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 use tauri::{AppHandle, Manager};
 
 #[cfg(target_os = "android")]
