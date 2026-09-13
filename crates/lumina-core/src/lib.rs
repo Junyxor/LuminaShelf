@@ -22,5 +22,5 @@ pub use provider::{
     SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile,
     ZLibraryProvider, ZLibrarySession,
 };
-pub use storage::StateStore;
+pub use storage::{PersistedDownloadTask, StateStore};
 pub use user_state::{AccountProfile, FavoriteBook, ReadingProgress};
