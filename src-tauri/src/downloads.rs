@@ -1,3 +1,4 @@
+use super::{unique_destination, AppState};
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, DownloadState, DownloadTask, SegmentedDownloader},
     library::now_unix_ms,
@@ -7,11 +8,11 @@ use reqwest::header::HeaderMap;
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{sync::Mutex, task::AbortHandle};
 use url::Url;
 
@@ -89,12 +90,16 @@ impl DownloadManager {
             .map_err(|error| error.to_string())
     }
 
-    pub fn enqueue(&self, app: AppHandle, task: DownloadTask) -> Result<DownloadTaskSnapshot, String> {
+    pub async fn enqueue(
+        &self,
+        app: AppHandle,
+        task: DownloadTask,
+    ) -> Result<DownloadTaskSnapshot, String> {
         self.store
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
         let snapshot = DownloadTaskSnapshot::from(&task);
-        self.spawn(app, task);
+        self.spawn(app, task).await;
         Ok(snapshot)
     }
 
@@ -130,7 +135,7 @@ impl DownloadManager {
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
         let snapshot = DownloadTaskSnapshot::from(&task);
-        self.spawn(app, task);
+        self.spawn(app, task).await;
         Ok(snapshot)
     }
 
@@ -169,7 +174,7 @@ impl DownloadManager {
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
         let snapshot = DownloadTaskSnapshot::from(&task);
-        self.spawn(app, task);
+        self.spawn(app, task).await;
         Ok(snapshot)
     }
 
@@ -194,10 +199,9 @@ impl DownloadManager {
             .ok_or_else(|| format!("download task not found: {id}"))
     }
 
-    fn spawn(&self, app: AppHandle, mut task: DownloadTask) {
+    async fn spawn(&self, app: AppHandle, mut task: DownloadTask) {
         let manager = self.clone();
         let task_id = task.id.clone();
-        let active = self.active.clone();
         let handle = tokio::spawn(async move {
             let result = manager.run_task(&app, &mut task).await;
             if let Err(error) = result {
@@ -207,12 +211,13 @@ impl DownloadManager {
                 task.updated_at_unix_ms = now_unix_ms();
                 let _ = manager.persist_and_emit(&app, &task);
             }
-            active.lock().await.remove(&task_id);
         });
         let abort = handle.abort_handle();
+        self.active.lock().await.insert(task_id.clone(), abort);
         let active = self.active.clone();
         tokio::spawn(async move {
-            active.lock().await.insert(task_id, abort);
+            let _ = handle.await;
+            active.lock().await.remove(&task_id);
         });
     }
 
@@ -334,6 +339,87 @@ impl DownloadManager {
         let _ = app.emit("download-task-updated", DownloadTaskSnapshot::from(task));
         Ok(())
     }
+}
+
+#[tauri::command]
+pub fn list_downloads(state: State<'_, AppState>) -> Result<Vec<DownloadTaskSnapshot>, String> {
+    state.downloads.list()
+}
+
+#[tauri::command]
+pub async fn enqueue_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider_id: String,
+    book_id: String,
+    title: String,
+    format: BookFormat,
+    download_dir: Option<String>,
+) -> Result<DownloadTaskSnapshot, String> {
+    let system_download_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
+    let destination_dir = download_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
+    let destination = unique_destination(&destination_dir, &title, format.extension());
+    let placeholder = Url::parse("about:blank").expect("valid placeholder URL");
+    let task = DownloadTask::new(
+        title,
+        placeholder,
+        destination,
+        Some(provider_id),
+        Some(book_id),
+    );
+    state.downloads.enqueue(app, task).await
+}
+
+#[tauri::command]
+pub async fn pause_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<DownloadTaskSnapshot, String> {
+    state.downloads.pause(&app, &task_id).await
+}
+
+#[tauri::command]
+pub async fn resume_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<DownloadTaskSnapshot, String> {
+    state.downloads.resume(app, &task_id).await
+}
+
+#[tauri::command]
+pub async fn cancel_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<DownloadTaskSnapshot, String> {
+    state.downloads.cancel(&app, &task_id).await
+}
+
+#[tauri::command]
+pub async fn retry_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<DownloadTaskSnapshot, String> {
+    state.downloads.retry(app, &task_id).await
+}
+
+#[tauri::command]
+pub async fn remove_download(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<bool, String> {
+    state.downloads.remove(&task_id).await
 }
 
 fn manifest_path(destination: &Path) -> std::path::PathBuf {
