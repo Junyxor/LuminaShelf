@@ -1,6 +1,8 @@
 use super::{unique_destination, AppState};
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, DownloadState, DownloadTask, SegmentedDownloader},
+    download::{
+        DownloadConfig, DownloadProgress, DownloadState, DownloadTask, SegmentedDownloader,
+    },
     library::now_unix_ms,
     AppResolver, BookFormat, LibraryItem, ProviderRegistry, StateStore,
 };
@@ -238,11 +240,9 @@ impl DownloadManager {
         self.persist_and_emit(app, task)?;
 
         let (url, headers) = self.fresh_request(task).await?;
-        let downloader = SegmentedDownloader::with_resolver(
-            self.resolver.clone(),
-            DownloadConfig::default(),
-        )
-        .map_err(|error| error.to_string())?;
+        let downloader =
+            SegmentedDownloader::with_resolver(self.resolver.clone(), DownloadConfig::default())
+                .map_err(|error| error.to_string())?;
         let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
         let future = downloader.download_to_with_context(
             url,
@@ -349,7 +349,10 @@ impl DownloadManager {
     }
 }
 
-fn manager(app: &AppHandle, state: &State<'_, AppState>) -> Result<&'static DownloadManager, String> {
+fn manager(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<&'static DownloadManager, String> {
     if let Some(manager) = DOWNLOAD_MANAGER.get() {
         return Ok(manager);
     }
@@ -357,8 +360,8 @@ fn manager(app: &AppHandle, state: &State<'_, AppState>) -> Result<&'static Down
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
-    let store = StateStore::open(config_dir.join("state.sqlite3"))
-        .map_err(|error| error.to_string())?;
+    let store =
+        StateStore::open(config_dir.join("state.sqlite3")).map_err(|error| error.to_string())?;
     let manager = DownloadManager::new(store, state.providers.clone(), state.resolver.clone());
     manager.recover_interrupted()?;
     let _ = DOWNLOAD_MANAGER.set(manager);
