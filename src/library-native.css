@@ -1,0 +1,50 @@
+.native-import-copy {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.native-import-copy strong {
+  color: var(--md-sys-color-on-surface, #e2e2e9);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.native-import-copy small {
+  color: var(--md-sys-color-on-surface-variant, #c3c6d0);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.android-storage-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(123, 174, 236, .1));
+  border-radius: 16px;
+  background: var(--md-sys-color-surface-container, rgba(6, 15, 28, .34));
+}
+
+.android-storage-note strong {
+  color: var(--md-sys-color-on-surface, #e2e2e9);
+  font-size: 13px;
+}
+
+.android-storage-note span {
+  color: var(--md-sys-color-on-surface-variant, #c3c6d0);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+@media (max-width: 620px) {
+  .android-import-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .android-import-toolbar .primary-button {
+    width: 100%;
+  }
+}
