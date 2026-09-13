@@ -1,4 +1,5 @@
 mod download_control;
+mod session_vault;
 
 use download_control::ControlledDownload;
 use lumina_core::{
@@ -155,6 +156,15 @@ struct ZLibraryAccountStatus {
     signed_in: bool,
     origin: String,
     origin_mode: ZLibraryOriginMode,
+    secure_session_storage: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZLibraryRestoreResult {
+    status: ZLibraryAccountStatus,
+    restored: bool,
+    warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +172,8 @@ struct ZLibraryAccountStatus {
 struct ZLibraryLoginResult {
     status: ZLibraryAccountStatus,
     profile: Option<ZLibraryProfile>,
+    session_persisted: bool,
+    persistence_warning: Option<String>,
 }
 
 #[tauri::command]
@@ -290,6 +302,42 @@ async fn zlibrary_status(state: State<'_, AppState>) -> Result<ZLibraryAccountSt
 }
 
 #[tauri::command]
+async fn zlibrary_restore_session(state: State<'_, AppState>) -> Result<ZLibraryRestoreResult, String> {
+    if state.zlibrary.has_session().await {
+        return Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: None,
+        });
+    }
+
+    match session_vault::load() {
+        Ok(Some(session)) => match state.zlibrary.set_session(session).await {
+            Ok(()) => Ok(ZLibraryRestoreResult {
+                status: zlibrary_account_status(&state).await,
+                restored: true,
+                warning: None,
+            }),
+            Err(error) => Ok(ZLibraryRestoreResult {
+                status: zlibrary_account_status(&state).await,
+                restored: false,
+                warning: Some(format!("stored Z-Library session was rejected: {error}")),
+            }),
+        },
+        Ok(None) => Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: None,
+        }),
+        Err(error) => Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: Some(error),
+        }),
+    }
+}
+
+#[tauri::command]
 async fn zlibrary_login(
     state: State<'_, AppState>,
     email: String,
@@ -331,21 +379,28 @@ async fn zlibrary_login(
         .set_origin(selected_origin)
         .await
         .map_err(|error| error.to_string())?;
-    state
+    let session = state
         .zlibrary
         .login_direct(email, &password)
         .await
         .map_err(|error| error.to_string())?;
 
+    let (session_persisted, persistence_warning) = match session_vault::save(&session) {
+        Ok(persisted) => (persisted, None),
+        Err(error) => (false, Some(error)),
+    };
     let profile = state.zlibrary.profile().await.ok();
     Ok(ZLibraryLoginResult {
         status: zlibrary_account_status(&state).await,
         profile,
+        session_persisted,
+        persistence_warning,
     })
 }
 
 #[tauri::command]
 async fn zlibrary_logout(state: State<'_, AppState>) -> Result<ZLibraryAccountStatus, String> {
+    session_vault::clear()?;
     state.zlibrary.clear_session().await;
     Ok(zlibrary_account_status(&state).await)
 }
@@ -675,6 +730,7 @@ async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
         signed_in: state.zlibrary.has_session().await,
         origin: state.zlibrary.origin().await.to_string(),
         origin_mode: config.origin_mode,
+        secure_session_storage: session_vault::supported(),
     }
 }
 
@@ -835,6 +891,7 @@ pub fn run() {
             set_resolver_policy,
             resolve_host,
             zlibrary_status,
+            zlibrary_restore_session,
             zlibrary_login,
             zlibrary_logout,
             zlibrary_profile,
