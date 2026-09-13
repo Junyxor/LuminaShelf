@@ -12,9 +12,11 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(target_os = "android")]
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tokio::{sync::Mutex, task::AbortHandle};
 use url::Url;
 
@@ -99,9 +101,11 @@ impl DownloadManager {
         app: AppHandle,
         task: DownloadTask,
     ) -> Result<DownloadTaskSnapshot, String> {
+        ensure_download_notification_permission(&app);
         self.store
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
+        notify_download_task(&app, &task);
         let snapshot = DownloadTaskSnapshot::from(&task);
         self.spawn(app, task).await;
         Ok(snapshot)
@@ -120,6 +124,7 @@ impl DownloadManager {
         task.error = None;
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, &task)?;
+        notify_download_task(app, &task);
         Ok(DownloadTaskSnapshot::from(&task))
     }
 
@@ -127,6 +132,7 @@ impl DownloadManager {
         if self.active.lock().await.contains_key(id) {
             return self.snapshot(id);
         }
+        ensure_download_notification_permission(&app);
         let mut task = self.require_task(id)?;
         if task.state == DownloadState::Completed || task.state == DownloadState::Cancelled {
             return Ok(DownloadTaskSnapshot::from(&task));
@@ -138,6 +144,7 @@ impl DownloadManager {
         self.store
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
+        notify_download_task(&app, &task);
         let snapshot = DownloadTaskSnapshot::from(&task);
         self.spawn(app, task).await;
         Ok(snapshot)
@@ -154,6 +161,7 @@ impl DownloadManager {
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, &task)?;
         remove_partial_files(&task).await;
+        notify_download_task(app, &task);
         Ok(DownloadTaskSnapshot::from(&task))
     }
 
@@ -161,6 +169,7 @@ impl DownloadManager {
         if self.active.lock().await.contains_key(id) {
             return self.snapshot(id);
         }
+        ensure_download_notification_permission(&app);
         let mut task = self.require_task(id)?;
         if task.state == DownloadState::Completed {
             return Ok(DownloadTaskSnapshot::from(&task));
@@ -176,6 +185,7 @@ impl DownloadManager {
         self.store
             .upsert_download_task(&task)
             .map_err(|error| error.to_string())?;
+        notify_download_task(&app, &task);
         let snapshot = DownloadTaskSnapshot::from(&task);
         self.spawn(app, task).await;
         Ok(snapshot)
@@ -222,6 +232,7 @@ impl DownloadManager {
                 task.error = Some(error);
                 task.updated_at_unix_ms = now_unix_ms();
                 let _ = manager.persist_and_emit(&app, &task);
+                notify_download_task(&app, &task);
             }
         });
         let abort = handle.abort_handle();
@@ -238,6 +249,7 @@ impl DownloadManager {
         task.error = None;
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, task)?;
+        notify_download_task(app, task);
 
         let (url, headers) = self.fresh_request(task).await?;
         let downloader =
@@ -257,6 +269,7 @@ impl DownloadManager {
         tokio::pin!(future);
 
         let mut last_progress_at = Instant::now();
+        let mut last_notification_at = Instant::now();
         let mut last_progress_bytes = task.downloaded_bytes;
         loop {
             tokio::select! {
@@ -281,6 +294,10 @@ impl DownloadManager {
                         last_progress_at = Instant::now();
                         last_progress_bytes = progress.downloaded_bytes;
                     }
+                    if last_notification_at.elapsed() >= Duration::from_secs(2) {
+                        notify_download_task(app, task);
+                        last_notification_at = Instant::now();
+                    }
                 }
             }
         }
@@ -289,6 +306,7 @@ impl DownloadManager {
         task.bytes_per_second = 0.0;
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, task)?;
+        notify_download_task(app, task);
 
         let item = LibraryItem::inspect(
             &task.destination,
@@ -305,6 +323,7 @@ impl DownloadManager {
         }
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, task)?;
+        notify_download_task(app, task);
         let _ = app.emit(
             "download-completed",
             DownloadCompletedEvent {
@@ -462,4 +481,101 @@ async fn remove_partial_files(task: &DownloadTask) {
 
 fn manifest_path(destination: &Path) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.lumina-part.json", destination.display()))
+}
+
+#[cfg(target_os = "android")]
+fn ensure_download_notification_permission(app: &AppHandle) {
+    let notification = app.notification();
+    if matches!(
+        notification.permission_state(),
+        Ok(PermissionState::Prompt | PermissionState::PromptWithRationale)
+    ) {
+        let _ = notification.request_permission();
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn ensure_download_notification_permission(_app: &AppHandle) {}
+
+#[cfg(target_os = "android")]
+fn notify_download_task(app: &AppHandle, task: &DownloadTask) {
+    if !matches!(
+        app.notification().permission_state(),
+        Ok(PermissionState::Granted)
+    ) {
+        return;
+    }
+
+    let body = download_notification_body(task);
+    let _ = app
+        .notification()
+        .builder()
+        .id(download_notification_id(&task.id))
+        .title(task.title.clone())
+        .body(body)
+        .show();
+}
+
+#[cfg(not(target_os = "android"))]
+fn notify_download_task(_app: &AppHandle, _task: &DownloadTask) {}
+
+#[cfg(target_os = "android")]
+fn download_notification_id(task_id: &str) -> i32 {
+    let mut hash = 2_166_136_261_u32;
+    for byte in task_id.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    (hash & 0x7fff_ffff) as i32
+}
+
+#[cfg(target_os = "android")]
+fn download_notification_body(task: &DownloadTask) -> String {
+    match task.state {
+        DownloadState::Queued => "已加入 LuminaShelf 下载队列".to_string(),
+        DownloadState::Connecting => "正在连接下载源…".to_string(),
+        DownloadState::Downloading => {
+            let rate = format_rate(task.bytes_per_second);
+            match task.total_bytes.filter(|total| *total > 0) {
+                Some(total) => {
+                    let percent = (task.downloaded_bytes.saturating_mul(100) / total).min(100);
+                    format!("{percent}% · {rate}")
+                }
+                None => format!("已下载 {} · {rate}", format_bytes(task.downloaded_bytes)),
+            }
+        }
+        DownloadState::Paused => "下载已暂停，可从应用内继续".to_string(),
+        DownloadState::Verifying => "下载完成，正在校验文件…".to_string(),
+        DownloadState::Completed => format!("下载完成 · {}", format_bytes(task.downloaded_bytes)),
+        DownloadState::Failed => format!(
+            "下载失败 · {}",
+            task.error.as_deref().unwrap_or("请在应用内重试")
+        ),
+        DownloadState::Cancelled => "下载已取消".to_string(),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn format_rate(bytes_per_second: f64) -> String {
+    if bytes_per_second <= 0.0 {
+        "计算速度中".to_string()
+    } else {
+        format!("{}/s", format_bytes(bytes_per_second as u64))
+    }
+}
+
+#[cfg(target_os = "android")]
+fn format_bytes(value: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = value as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || size >= 10.0 {
+        format!("{:.0} {}", size, UNITS[unit])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit])
+    }
 }
