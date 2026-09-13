@@ -5,6 +5,7 @@ export type ZLibraryAccountStatus = {
   signedIn: boolean;
   origin: string;
   originMode: "automatic" | "manual";
+  secureSessionStorage: boolean;
 };
 
 type ZLibraryProfile = {
@@ -39,6 +40,8 @@ type ZLibraryHistoryPage = {
 type ZLibraryLoginResult = {
   status: ZLibraryAccountStatus;
   profile?: ZLibraryProfile | null;
+  sessionPersisted: boolean;
+  persistenceWarning?: string | null;
 };
 
 function formatBytes(value?: number | null) {
@@ -128,6 +131,9 @@ export default function ZLibraryAccount({
       setPassword("");
       commitStatus(result.status);
       if (result.profile) setProfile(result.profile);
+      if (result.persistenceWarning) {
+        setError(`登录成功，但安全保存 Session 失败：${result.persistenceWarning}`);
+      }
       try {
         const nextHistory = await invoke<ZLibraryHistoryPage>("zlibrary_history", { page: 1 });
         setHistory(nextHistory);
@@ -135,7 +141,10 @@ export default function ZLibraryAccount({
           setProfile(await invoke<ZLibraryProfile>("zlibrary_profile"));
         }
       } catch (reason) {
-        setError(`登录成功，但账户数据加载失败：${String(reason)}`);
+        setError((current) => {
+          const accountWarning = `登录成功，但账户数据加载失败：${String(reason)}`;
+          return current ? `${current} · ${accountWarning}` : accountWarning;
+        });
       }
     } catch (reason) {
       setPassword("");
@@ -247,10 +256,15 @@ export default function ZLibraryAccount({
         <aside className="account-security glass">
           <span className="security-mark">◇</span>
           <span className="eyebrow">SESSION SECURITY</span>
-          <h3>这一版不保存密码或 Session Key。</h3>
-          <p>密码只用于本次登录调用，成功或失败后都会从表单状态清空。`remix-userkey` 只保留在 Rust 进程内存中，因此关闭应用后需要重新登录。</p>
+          <h3>{status.secureSessionStorage ? "密码不保存，Session 交给系统安全存储。" : "密码与 Session 都只保留在当前进程。"}</h3>
+          <p>
+            {status.secureSessionStorage
+              ? "密码只用于本次登录调用，成功或失败后都会从表单状态清空。登录成功后仅保存 Z-Library Session（user id/key），用于应用重启后的自动恢复。"
+              : "密码只用于本次登录调用，成功或失败后都会从表单状态清空。当前平台不启用持久化 Session，因此关闭应用后需要重新登录。"}
+          </p>
           <div className="security-row"><span>密码落盘</span><strong>否</strong></div>
-          <div className="security-row"><span>Session 落盘</span><strong>否</strong></div>
+          <div className="security-row"><span>Session 存储</span><strong>{status.secureSessionStorage ? "Android Keystore" : "仅内存"}</strong></div>
+          <div className="security-row"><span>重启恢复</span><strong>{status.secureSessionStorage ? "支持" : "需重新登录"}</strong></div>
           <div className="security-row"><span>Origin 落盘</span><strong>是 · 非敏感配置</strong></div>
         </aside>
       </div>
@@ -264,7 +278,7 @@ export default function ZLibraryAccount({
           <div>
             <span className="eyebrow">Z-LIBRARY EAPI</span>
             <h2>账户已连接。</h2>
-            <p className="account-origin">{status.origin} · {status.originMode === "automatic" ? "自动选择" : "手动固定"}</p>
+            <p className="account-origin">{status.origin} · {status.originMode === "automatic" ? "自动选择" : "手动固定"} · {status.secureSessionStorage ? "安全 Session 可恢复" : "Session 仅本次运行"}</p>
           </div>
           <div className="account-actions">
             <span className="account-state online">● 已登录</span>
