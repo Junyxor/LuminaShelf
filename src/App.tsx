@@ -58,7 +58,18 @@ type LibraryItem = {
   sourceBookId?: string | null;
 };
 
+type DownloadState =
+  | "queued"
+  | "connecting"
+  | "downloading"
+  | "paused"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 type DownloadProgressEvent = {
+  taskId: string;
   providerId: string;
   bookId: string;
   downloadedBytes: number;
@@ -70,13 +81,28 @@ type DownloadReceipt = {
   item: LibraryItem;
 };
 
+type PersistedDownloadTask = {
+  id: string;
+  providerId: string;
+  bookId: string;
+  title: string;
+  format: BookFormat;
+  destination: string;
+  state: DownloadState;
+  downloadedBytes: number;
+  totalBytes?: number | null;
+  error?: string | null;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+};
+
 type DownloadTask = {
   key: string;
   providerId: string;
   bookId: string;
   title: string;
   format: BookFormat;
-  state: "queued" | "downloading" | "completed" | "failed";
+  state: DownloadState;
   downloadedBytes: number;
   totalBytes?: number | null;
   path?: string;
@@ -139,14 +165,46 @@ function formatBytes(value?: number | null) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
+function taskKey(providerId: string, bookId: string, format: BookFormat) {
+  return `${providerId}:${bookId}:${format}`;
+}
+
 function taskProgress(task: DownloadTask) {
   if (!task.totalBytes || task.totalBytes <= 0) return task.state === "completed" ? 100 : 0;
   return Math.min(100, Math.round((task.downloadedBytes / task.totalBytes) * 100));
 }
 
+function taskLabel(task: DownloadTask) {
+  switch (task.state) {
+    case "completed": return "已完成";
+    case "failed": return "失败";
+    case "paused": return "已暂停";
+    case "cancelled": return "已取消";
+    case "queued": return "排队";
+    case "connecting": return "连接中";
+    case "verifying": return "校验中";
+    case "downloading": return `${taskProgress(task)}%`;
+  }
+}
+
 function preferredFormat(book: BookSummary): BookFormat | null {
   const candidates = [book.format, ...book.availableFormats].filter(Boolean) as BookFormat[];
   return candidates.find((format) => format !== "other") ?? candidates[0] ?? null;
+}
+
+function restoreDownloads(tasks: PersistedDownloadTask[]) {
+  return Object.fromEntries(tasks.map((task) => [task.id, {
+    key: task.id,
+    providerId: task.providerId,
+    bookId: task.bookId,
+    title: task.title,
+    format: task.format,
+    state: task.state,
+    downloadedBytes: task.downloadedBytes,
+    totalBytes: task.totalBytes,
+    path: task.destination,
+    error: task.error ?? undefined,
+  } satisfies DownloadTask]));
 }
 
 export default function App() {
@@ -178,11 +236,13 @@ export default function App() {
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
       invoke<ZLibraryAccountStatus>("zlibrary_status"),
+      invoke<PersistedDownloadTask[]>("download_tasks"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus]) => {
+      .then(([nextStatus, nextProviders, nextZlibraryStatus, persistedDownloads]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
         setZlibraryStatus(nextZlibraryStatus);
+        setDownloads(restoreDownloads(persistedDownloads));
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -196,17 +256,17 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     listen<DownloadProgressEvent>("download-progress", (event) => {
       const progress = event.payload;
-      const key = `${progress.providerId}:${progress.bookId}`;
       setDownloads((current) => {
-        const task = current[key];
+        const task = current[progress.taskId];
         if (!task) return current;
         return {
           ...current,
-          [key]: {
+          [progress.taskId]: {
             ...task,
             state: "downloading",
             downloadedBytes: progress.downloadedBytes,
             totalBytes: progress.totalBytes,
+            error: undefined,
           },
         };
       });
@@ -228,7 +288,11 @@ export default function App() {
       && !zlibraryStatus?.signedIn,
   );
   const downloadTasks = useMemo(
-    () => Object.values(downloads).sort((a, b) => a.title.localeCompare(b.title)),
+    () => Object.values(downloads).sort((a, b) => {
+      const aDone = a.state === "completed" ? 1 : 0;
+      const bDone = b.state === "completed" ? 1 : 0;
+      return aDone - bDone || a.title.localeCompare(b.title);
+    }),
     [downloads],
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
@@ -292,35 +356,43 @@ export default function App() {
     }
   }
 
-  async function startDownload(book: BookSummary) {
-    const format = preferredFormat(book);
-    if (!format || !selectedProvider) {
-      setError("这本书没有可用的下载格式。");
-      return;
-    }
-    if (providerNeedsLogin) {
+  async function queueDownload(
+    providerId: string,
+    bookId: string,
+    title: string,
+    format: BookFormat,
+  ) {
+    if (providerId === "zlibrary" && !zlibraryStatus?.signedIn) {
       setPage("account");
+      setError("继续 Z-Library 下载前需要重新登录账户。");
       return;
     }
-    const key = `${selectedProvider}:${book.id}`;
-    setDownloads((current) => ({
-      ...current,
-      [key]: {
-        key,
-        providerId: selectedProvider,
-        bookId: book.id,
-        title: book.title,
-        format,
-        state: "queued",
-        downloadedBytes: 0,
-      },
-    }));
+
+    const key = taskKey(providerId, bookId, format);
+    setDownloads((current) => {
+      const existing = current[key];
+      return {
+        ...current,
+        [key]: {
+          key,
+          providerId,
+          bookId,
+          title,
+          format,
+          state: "queued",
+          downloadedBytes: existing?.downloadedBytes ?? 0,
+          totalBytes: existing?.totalBytes,
+          path: existing?.path,
+        },
+      };
+    });
     setError(null);
+
     try {
       const receipt = await invoke<DownloadReceipt>("download_book", {
-        providerId: selectedProvider,
-        bookId: book.id,
-        title: book.title,
+        providerId,
+        bookId,
+        title,
         format,
         downloadDir: settings.downloadDirectory.trim() || null,
       });
@@ -328,9 +400,16 @@ export default function App() {
         ...current,
         [key]: {
           ...current[key],
+          key,
+          providerId,
+          bookId,
+          title,
+          format,
           state: "completed",
           path: receipt.path,
-          downloadedBytes: current[key]?.totalBytes ?? current[key]?.downloadedBytes ?? 0,
+          downloadedBytes: receipt.item.sizeBytes,
+          totalBytes: receipt.item.sizeBytes,
+          error: undefined,
         },
       }));
       setLibraryItems((current) => [
@@ -342,10 +421,42 @@ export default function App() {
         ...current,
         [key]: {
           ...current[key],
+          key,
+          providerId,
+          bookId,
+          title,
+          format,
           state: "failed",
+          downloadedBytes: current[key]?.downloadedBytes ?? 0,
           error: String(reason),
         },
       }));
+      setError(String(reason));
+    }
+  }
+
+  async function startDownload(book: BookSummary) {
+    const format = preferredFormat(book);
+    if (!format || !selectedProvider) {
+      setError("这本书没有可用的下载格式。");
+      return;
+    }
+    await queueDownload(selectedProvider, book.id, book.title, format);
+  }
+
+  async function retryDownload(task: DownloadTask) {
+    await queueDownload(task.providerId, task.bookId, task.title, task.format);
+  }
+
+  async function removeDownload(task: DownloadTask) {
+    try {
+      await invoke<boolean>("remove_download_task", { taskId: task.key });
+      setDownloads((current) => {
+        const next = { ...current };
+        delete next[task.key];
+        return next;
+      });
+    } catch (reason) {
       setError(String(reason));
     }
   }
@@ -383,8 +494,8 @@ export default function App() {
         <section className="hero glass">
           <div>
             <span className="eyebrow">HIGH PERFORMANCE E-BOOK CLIENT</span>
-            <h2>检索、下载与本地书架，<br />现在开始真正连起来。</h2>
-            <p>React 只负责界面，搜索、解析、账户与分段下载继续交给 Rust Core。公开数据源可以直接用，需要认证的数据源从左上角账户页连接。</p>
+            <h2>搜索、下载、本地书架，<br />现在是一条完整链路。</h2>
+            <p>Provider 请求、网络解析和分段下载由 Rust Core 负责。下载队列已经持久化，应用重启后未完成任务会保留并可继续。</p>
             <button className="primary-button hero-action" onClick={() => setPage("search")}>开始搜索</button>
           </div>
           <div className="orb"><span>Z</span></div>
@@ -393,7 +504,7 @@ export default function App() {
         <section className="cards">
           <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
           <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>本轮已识别本地书籍</small></article>
-          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 当前任务</small></article>
+          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 持久化任务</small></article>
         </section>
 
         <section className="workspace glass">
@@ -434,7 +545,7 @@ export default function App() {
         {providerNeedsLogin ? (
           <section className="auth-gate glass">
             <span className="auth-gate-mark">○</span>
-            <div><span className="eyebrow">AUTHENTICATION REQUIRED</span><h3>先连接 Z-Library 账户</h3><p>这个 Provider 的搜索、详情和下载需要 EAPI Session。账户入口已经从主导航移到左上角，不会占用主要工作区。</p></div>
+            <div><span className="eyebrow">AUTHENTICATION REQUIRED</span><h3>先连接 Z-Library 账户</h3><p>这个 Provider 的搜索、详情和下载需要 EAPI Session。账户入口保留在左上角工具区。</p></div>
             <button className="primary-button" onClick={() => setPage("account")}>前往账户</button>
           </section>
         ) : searchResult ? (
@@ -449,8 +560,9 @@ export default function App() {
             <div className="book-grid">
               {searchResult.items.map((book) => {
                 const format = preferredFormat(book);
-                const key = `${selectedProvider}:${book.id}`;
-                const task = downloads[key];
+                const key = format ? taskKey(selectedProvider, book.id, format) : "";
+                const task = key ? downloads[key] : undefined;
+                const activeTask = task && ["queued", "connecting", "downloading", "verifying"].includes(task.state);
                 return (
                   <article className="book-card glass" key={book.id}>
                     <button className="cover-button" onClick={() => void openDetails(book)} aria-label={`查看 ${book.title} 详情`}>
@@ -466,8 +578,8 @@ export default function App() {
                       </div>
                       <div className="book-actions">
                         <button className="ghost-button" onClick={() => void openDetails(book)}>详情</button>
-                        <button className="primary-button small" disabled={!format || task?.state === "downloading" || task?.state === "queued"} onClick={() => void startDownload(book)}>
-                          {task?.state === "completed" ? "已下载" : task?.state === "downloading" || task?.state === "queued" ? "下载中" : "下载"}
+                        <button className="primary-button small" disabled={!format || Boolean(activeTask)} onClick={() => void startDownload(book)}>
+                          {task?.state === "completed" ? "已下载" : activeTask ? "下载中" : task ? "继续" : "下载"}
                         </button>
                       </div>
                     </div>
@@ -477,7 +589,7 @@ export default function App() {
             </div>
           </section>
         ) : (
-          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>搜索结果会直接使用 Rust Provider 返回的数据，不再是演示卡片。</p></section>
+          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>搜索结果直接使用 Rust Provider 返回的数据。</p></section>
         )}
       </>
     );
@@ -486,21 +598,27 @@ export default function App() {
   function renderDownloads() {
     return (
       <section className="workspace glass">
-        <div className="workspace-title"><div><span className="eyebrow">RUST DOWNLOADER</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
+        <div className="workspace-title"><div><span className="eyebrow">PERSISTENT DOWNLOAD QUEUE</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
         {downloadTasks.length === 0 ? (
           <div className="inline-empty">还没有下载任务。从搜索页选择一本书即可开始。</div>
         ) : (
           <div className="download-list">
             {downloadTasks.map((task) => {
               const progress = taskProgress(task);
+              const canResume = ["paused", "failed", "cancelled"].includes(task.state);
+              const isActive = ["queued", "connecting", "downloading", "verifying"].includes(task.state);
               return (
                 <article className="download-row" key={task.key}>
                   <div className="download-head">
                     <div><strong>{task.title}</strong><small>{task.format.toUpperCase()} · {task.providerId}</small></div>
-                    <span className={`task-state ${task.state}`}>{task.state === "completed" ? "已完成" : task.state === "failed" ? "失败" : task.state === "queued" ? "排队" : `${progress}%`}</span>
+                    <span className={`task-state ${task.state}`}>{taskLabel(task)}</span>
                   </div>
                   <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
-                  <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.path ?? task.error ?? "Rust segmented downloader"}</span></div>
+                  <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.error ?? task.path ?? (task.state === "paused" ? "上次退出时未完成，可继续" : "Rust segmented downloader")}</span></div>
+                  <div className="download-actions">
+                    {canResume ? <button className="primary-button small" onClick={() => void retryDownload(task)}>继续</button> : null}
+                    {!isActive ? <button className="ghost-button" onClick={() => void removeDownload(task)}>移除记录</button> : null}
+                  </div>
                 </article>
               );
             })}
@@ -530,7 +648,7 @@ export default function App() {
             ))}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书，完成后会自动进入本轮书架。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书。</p></section>
         )}
       </>
     );
@@ -540,7 +658,7 @@ export default function App() {
     return (
       <div className="settings-stack">
         <section className="settings-intro glass">
-          <div><span className="eyebrow">APP PREFERENCES</span><h2>偏好与底层能力，都集中在这里。</h2><p>设置不是主要工作流，因此从主导航中独立出来。搜索、下载、本地书库、网络与核心配置都统一放在这个页面。</p></div>
+          <div><span className="eyebrow">APP PREFERENCES</span><h2>偏好与底层能力，都集中在这里。</h2><p>设置不是主要工作流，因此从主导航中独立出来。搜索、下载、本地书库、网络与核心配置统一放在这个页面。</p></div>
           <button className="ghost-button" onClick={resetSettings}>恢复默认</button>
         </section>
 
