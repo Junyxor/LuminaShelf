@@ -9,12 +9,14 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Instant,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{sync::Mutex, task::AbortHandle};
 use url::Url;
+
+static DOWNLOAD_MANAGER: OnceLock<DownloadManager> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -341,9 +343,30 @@ impl DownloadManager {
     }
 }
 
+fn manager(app: &AppHandle, state: &State<'_, AppState>) -> Result<&'static DownloadManager, String> {
+    if let Some(manager) = DOWNLOAD_MANAGER.get() {
+        return Ok(manager);
+    }
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let store = StateStore::open(config_dir.join("state.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    let manager = DownloadManager::new(store, state.providers.clone(), state.resolver.clone());
+    manager.recover_interrupted()?;
+    let _ = DOWNLOAD_MANAGER.set(manager);
+    DOWNLOAD_MANAGER
+        .get()
+        .ok_or_else(|| "failed to initialize download manager".to_string())
+}
+
 #[tauri::command]
-pub fn list_downloads(state: State<'_, AppState>) -> Result<Vec<DownloadTaskSnapshot>, String> {
-    state.downloads.list()
+pub fn list_downloads(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<DownloadTaskSnapshot>, String> {
+    manager(&app, &state)?.list()
 }
 
 #[tauri::command]
@@ -375,7 +398,7 @@ pub async fn enqueue_download(
         Some(provider_id),
         Some(book_id),
     );
-    state.downloads.enqueue(app, task).await
+    manager(&app, &state)?.enqueue(app, task).await
 }
 
 #[tauri::command]
@@ -384,7 +407,7 @@ pub async fn pause_download(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<DownloadTaskSnapshot, String> {
-    state.downloads.pause(&app, &task_id).await
+    manager(&app, &state)?.pause(&app, &task_id).await
 }
 
 #[tauri::command]
@@ -393,7 +416,7 @@ pub async fn resume_download(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<DownloadTaskSnapshot, String> {
-    state.downloads.resume(app, &task_id).await
+    manager(&app, &state)?.resume(app, &task_id).await
 }
 
 #[tauri::command]
@@ -402,7 +425,7 @@ pub async fn cancel_download(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<DownloadTaskSnapshot, String> {
-    state.downloads.cancel(&app, &task_id).await
+    manager(&app, &state)?.cancel(&app, &task_id).await
 }
 
 #[tauri::command]
@@ -411,15 +434,16 @@ pub async fn retry_download(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<DownloadTaskSnapshot, String> {
-    state.downloads.retry(app, &task_id).await
+    manager(&app, &state)?.retry(app, &task_id).await
 }
 
 #[tauri::command]
 pub async fn remove_download(
+    app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<bool, String> {
-    state.downloads.remove(&task_id).await
+    manager(&app, &state)?.remove(&task_id).await
 }
 
 fn manifest_path(destination: &Path) -> std::path::PathBuf {
