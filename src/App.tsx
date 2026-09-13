@@ -58,29 +58,34 @@ type LibraryItem = {
   sourceBookId?: string | null;
 };
 
-type DownloadProgressEvent = {
-  providerId: string;
-  bookId: string;
-  downloadedBytes: number;
-  totalBytes?: number | null;
-};
-
-type DownloadReceipt = {
-  path: string;
-  item: LibraryItem;
-};
+type DownloadState =
+  | "queued"
+  | "connecting"
+  | "downloading"
+  | "paused"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 type DownloadTask = {
-  key: string;
-  providerId: string;
-  bookId: string;
+  id: string;
   title: string;
-  format: BookFormat;
-  state: "queued" | "downloading" | "completed" | "failed";
-  downloadedBytes: number;
+  providerId?: string | null;
+  bookId?: string | null;
+  destination: string;
+  state: DownloadState;
   totalBytes?: number | null;
-  path?: string;
-  error?: string;
+  downloadedBytes: number;
+  bytesPerSecond: number;
+  error?: string | null;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+};
+
+type DownloadCompletedEvent = {
+  task: DownloadTask;
+  item: LibraryItem;
 };
 
 type AppSettings = {
@@ -139,9 +144,33 @@ function formatBytes(value?: number | null) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
+function formatRate(value?: number | null) {
+  return value && value > 0 ? `${formatBytes(value)}/s` : "—";
+}
+
 function taskProgress(task: DownloadTask) {
   if (!task.totalBytes || task.totalBytes <= 0) return task.state === "completed" ? 100 : 0;
   return Math.min(100, Math.round((task.downloadedBytes / task.totalBytes) * 100));
+}
+
+function taskStateLabel(task: DownloadTask) {
+  const progress = taskProgress(task);
+  switch (task.state) {
+    case "queued": return "排队";
+    case "connecting": return "连接中";
+    case "downloading": return `${progress}%`;
+    case "paused": return "已暂停";
+    case "verifying": return "校验中";
+    case "completed": return "已完成";
+    case "failed": return "失败";
+    case "cancelled": return "已取消";
+  }
+}
+
+function taskFormat(task: DownloadTask) {
+  const name = task.destination.split(/[\\/]/).pop() ?? "";
+  const extension = name.includes(".") ? name.split(".").pop() : null;
+  return extension?.toUpperCase() || "FILE";
 }
 
 function preferredFormat(book: BookSummary): BookFormat | null {
@@ -178,11 +207,13 @@ export default function App() {
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
       invoke<ZLibraryAccountStatus>("zlibrary_status"),
+      invoke<DownloadTask[]>("list_downloads"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus]) => {
+      .then(([nextStatus, nextProviders, nextZlibraryStatus, nextDownloads]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
         setZlibraryStatus(nextZlibraryStatus);
+        setDownloads(Object.fromEntries(nextDownloads.map((task) => [task.id, task])));
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -193,30 +224,27 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
-    listen<DownloadProgressEvent>("download-progress", (event) => {
-      const progress = event.payload;
-      const key = `${progress.providerId}:${progress.bookId}`;
-      setDownloads((current) => {
-        const task = current[key];
-        if (!task) return current;
-        return {
-          ...current,
-          [key]: {
-            ...task,
-            state: "downloading",
-            downloadedBytes: progress.downloadedBytes,
-            totalBytes: progress.totalBytes,
-          },
-        };
-      });
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
+    const stops: Array<() => void> = [];
+    Promise.all([
+      listen<DownloadTask>("download-task-updated", (event) => {
+        const task = event.payload;
+        setDownloads((current) => ({ ...current, [task.id]: task }));
+      }),
+      listen<DownloadCompletedEvent>("download-completed", (event) => {
+        const { task, item } = event.payload;
+        setDownloads((current) => ({ ...current, [task.id]: task }));
+        setLibraryItems((current) => [item, ...current.filter((entry) => entry.path !== item.path)]);
+      }),
+    ]).then((unlisteners) => {
+      if (disposed) {
+        unlisteners.forEach((stop) => stop());
+      } else {
+        stops.push(...unlisteners);
+      }
     });
     return () => {
       disposed = true;
-      unlisten?.();
+      stops.forEach((stop) => stop());
     };
   }, []);
 
@@ -228,10 +256,16 @@ export default function App() {
       && !zlibraryStatus?.signedIn,
   );
   const downloadTasks = useMemo(
-    () => Object.values(downloads).sort((a, b) => a.title.localeCompare(b.title)),
+    () => Object.values(downloads).sort((a, b) => b.updatedAtUnixMs - a.updatedAtUnixMs),
     [downloads],
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
+
+  function latestTaskForBook(bookId: string) {
+    return downloadTasks.find(
+      (task) => task.providerId === selectedProvider && task.bookId === bookId && task.state !== "cancelled",
+    );
+  }
 
   function changeProvider(providerId: string) {
     setSelectedProvider(providerId);
@@ -292,6 +326,30 @@ export default function App() {
     }
   }
 
+  async function controlDownload(command: "pause_download" | "resume_download" | "cancel_download" | "retry_download", taskId: string) {
+    setError(null);
+    try {
+      const task = await invoke<DownloadTask>(command, { taskId });
+      setDownloads((current) => ({ ...current, [task.id]: task }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function removeDownloadTask(taskId: string) {
+    setError(null);
+    try {
+      await invoke<boolean>("remove_download", { taskId });
+      setDownloads((current) => {
+        const next = { ...current };
+        delete next[taskId];
+        return next;
+      });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
   async function startDownload(book: BookSummary) {
     const format = preferredFormat(book);
     if (!format || !selectedProvider) {
@@ -302,50 +360,36 @@ export default function App() {
       setPage("account");
       return;
     }
-    const key = `${selectedProvider}:${book.id}`;
-    setDownloads((current) => ({
-      ...current,
-      [key]: {
-        key,
-        providerId: selectedProvider,
-        bookId: book.id,
-        title: book.title,
-        format,
-        state: "queued",
-        downloadedBytes: 0,
-      },
-    }));
+
+    const existing = latestTaskForBook(book.id);
+    if (existing?.state === "paused") {
+      await controlDownload("resume_download", existing.id);
+      return;
+    }
+    if (existing?.state === "failed") {
+      await controlDownload("retry_download", existing.id);
+      return;
+    }
+    if (existing && ["queued", "connecting", "downloading", "verifying"].includes(existing.state)) {
+      setPage("downloads");
+      return;
+    }
+    if (existing?.state === "completed") {
+      setPage("downloads");
+      return;
+    }
+
     setError(null);
     try {
-      const receipt = await invoke<DownloadReceipt>("download_book", {
+      const task = await invoke<DownloadTask>("enqueue_download", {
         providerId: selectedProvider,
         bookId: book.id,
         title: book.title,
         format,
         downloadDir: settings.downloadDirectory.trim() || null,
       });
-      setDownloads((current) => ({
-        ...current,
-        [key]: {
-          ...current[key],
-          state: "completed",
-          path: receipt.path,
-          downloadedBytes: current[key]?.totalBytes ?? current[key]?.downloadedBytes ?? 0,
-        },
-      }));
-      setLibraryItems((current) => [
-        receipt.item,
-        ...current.filter((item) => item.path !== receipt.item.path),
-      ]);
+      setDownloads((current) => ({ ...current, [task.id]: task }));
     } catch (reason) {
-      setDownloads((current) => ({
-        ...current,
-        [key]: {
-          ...current[key],
-          state: "failed",
-          error: String(reason),
-        },
-      }));
       setError(String(reason));
     }
   }
@@ -393,7 +437,7 @@ export default function App() {
         <section className="cards">
           <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
           <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>本轮已识别本地书籍</small></article>
-          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 当前任务</small></article>
+          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 持久化任务</small></article>
         </section>
 
         <section className="workspace glass">
@@ -428,7 +472,7 @@ export default function App() {
             </select>
             <button className="primary-button" disabled={searching || !query.trim() || providerNeedsLogin}>{searching ? "搜索中…" : "搜索"}</button>
           </form>
-          <div className="search-hint">每页 {settings.searchPageSize} 项 · Provider 请求由 Rust Core 发起</div>
+          <div className="search-hint">每页 {settings.searchPageSize} 项 · 下载进入应用内 Rust 下载队列</div>
         </section>
 
         {providerNeedsLogin ? (
@@ -449,8 +493,17 @@ export default function App() {
             <div className="book-grid">
               {searchResult.items.map((book) => {
                 const format = preferredFormat(book);
-                const key = `${selectedProvider}:${book.id}`;
-                const task = downloads[key];
+                const task = latestTaskForBook(book.id);
+                const activeTask = task && ["queued", "connecting", "downloading", "verifying"].includes(task.state);
+                const buttonLabel = task?.state === "completed"
+                  ? "已下载"
+                  : task?.state === "paused"
+                    ? "继续"
+                    : task?.state === "failed"
+                      ? "重试"
+                      : activeTask
+                        ? "下载中"
+                        : "下载";
                 return (
                   <article className="book-card glass" key={book.id}>
                     <button className="cover-button" onClick={() => void openDetails(book)} aria-label={`查看 ${book.title} 详情`}>
@@ -466,8 +519,8 @@ export default function App() {
                       </div>
                       <div className="book-actions">
                         <button className="ghost-button" onClick={() => void openDetails(book)}>详情</button>
-                        <button className="primary-button small" disabled={!format || task?.state === "downloading" || task?.state === "queued"} onClick={() => void startDownload(book)}>
-                          {task?.state === "completed" ? "已下载" : task?.state === "downloading" || task?.state === "queued" ? "下载中" : "下载"}
+                        <button className="primary-button small" disabled={!format || Boolean(activeTask) || task?.state === "completed"} onClick={() => void startDownload(book)}>
+                          {buttonLabel}
                         </button>
                       </div>
                     </div>
@@ -486,21 +539,32 @@ export default function App() {
   function renderDownloads() {
     return (
       <section className="workspace glass">
-        <div className="workspace-title"><div><span className="eyebrow">RUST DOWNLOADER</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
+        <div className="workspace-title"><div><span className="eyebrow">IN-APP RUST DOWNLOADER</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
         {downloadTasks.length === 0 ? (
-          <div className="inline-empty">还没有下载任务。从搜索页选择一本书即可开始。</div>
+          <div className="inline-empty">还没有下载任务。从搜索页选择一本书即可进入应用内下载队列。</div>
         ) : (
           <div className="download-list">
             {downloadTasks.map((task) => {
               const progress = taskProgress(task);
+              const isRunning = ["queued", "connecting", "downloading", "verifying"].includes(task.state);
               return (
-                <article className="download-row" key={task.key}>
+                <article className="download-row" key={task.id}>
                   <div className="download-head">
-                    <div><strong>{task.title}</strong><small>{task.format.toUpperCase()} · {task.providerId}</small></div>
-                    <span className={`task-state ${task.state}`}>{task.state === "completed" ? "已完成" : task.state === "failed" ? "失败" : task.state === "queued" ? "排队" : `${progress}%`}</span>
+                    <div><strong>{task.title}</strong><small>{taskFormat(task)} · {task.providerId ?? "direct"}</small></div>
+                    <span className={`task-state ${task.state}`}>{taskStateLabel(task)}</span>
                   </div>
                   <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
-                  <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.path ?? task.error ?? "Rust segmented downloader"}</span></div>
+                  <div className="download-foot">
+                    <span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)} · {formatRate(task.bytesPerSecond)}</span>
+                    <span>{task.error ?? task.destination}</span>
+                  </div>
+                  <div className="download-actions">
+                    {isRunning ? <button className="ghost-button compact" onClick={() => void controlDownload("pause_download", task.id)}>暂停</button> : null}
+                    {task.state === "paused" ? <button className="primary-button compact" onClick={() => void controlDownload("resume_download", task.id)}>继续</button> : null}
+                    {task.state === "failed" || task.state === "cancelled" ? <button className="primary-button compact" onClick={() => void controlDownload("retry_download", task.id)}>重试</button> : null}
+                    {task.state !== "completed" && task.state !== "cancelled" ? <button className="ghost-button compact danger" onClick={() => void controlDownload("cancel_download", task.id)}>取消</button> : null}
+                    {["completed", "failed", "cancelled"].includes(task.state) ? <button className="ghost-button compact" onClick={() => void removeDownloadTask(task.id)}>清除记录</button> : null}
+                  </div>
                 </article>
               );
             })}
@@ -564,6 +628,7 @@ export default function App() {
             <span className="eyebrow">CORE</span><h3>关于 LuminaShelf</h3>
             <div className="readout"><span>版本</span><strong>v{status?.version ?? "0.5.0"}</strong></div>
             <div className="readout"><span>架构</span><strong>Tauri 2 + React + Rust</strong></div>
+            <div className="readout"><span>下载器</span><strong>Rust in-app segmented queue</strong></div>
             <div className="readout"><span>Core 状态</span><strong>{status?.rustCore ? "Online" : "Connecting"}</strong></div>
           </article>
         </section>
@@ -630,7 +695,7 @@ export default function App() {
             <p className="detail-author">{selectedBook.authors.join(" · ") || "作者未知"}</p>
             <div className="detail-facts"><span>{selectedBook.year ?? "年份未知"}</span><span>{selectedBook.language?.toUpperCase() ?? "语言未知"}</span><span>{preferredFormat(selectedBook)?.toUpperCase() ?? "格式未知"}</span></div>
             <div className="detail-description">{detailsLoading ? "正在从 Core 获取详情…" : bookDetails?.description || "当前 Provider 没有提供简介。"}</div>
-            <button className="primary-button wide" disabled={!preferredFormat(selectedBook)} onClick={() => void startDownload(selectedBook)}>下载到 LuminaShelf</button>
+            <button className="primary-button wide" disabled={!preferredFormat(selectedBook)} onClick={() => void startDownload(selectedBook)}>加入下载队列</button>
           </aside>
         </div>
       ) : null}
