@@ -20,7 +20,7 @@ static DOWNLOAD_MANAGER: OnceLock<DownloadManager> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DownloadTaskSnapshot {
+pub(super) struct DownloadTaskSnapshot {
     pub id: String,
     pub title: String,
     pub provider_id: Option<String>,
@@ -62,7 +62,7 @@ struct DownloadCompletedEvent {
 }
 
 #[derive(Clone)]
-pub struct DownloadManager {
+struct DownloadManager {
     store: StateStore,
     providers: ProviderRegistry,
     resolver: AppResolver,
@@ -70,7 +70,7 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(store: StateStore, providers: ProviderRegistry, resolver: AppResolver) -> Self {
+    fn new(store: StateStore, providers: ProviderRegistry, resolver: AppResolver) -> Self {
         Self {
             store,
             providers,
@@ -79,20 +79,20 @@ impl DownloadManager {
         }
     }
 
-    pub fn recover_interrupted(&self) -> Result<usize, String> {
+    fn recover_interrupted(&self) -> Result<usize, String> {
         self.store
             .pause_interrupted_downloads()
             .map_err(|error| error.to_string())
     }
 
-    pub fn list(&self) -> Result<Vec<DownloadTaskSnapshot>, String> {
+    fn list(&self) -> Result<Vec<DownloadTaskSnapshot>, String> {
         self.store
             .list_download_tasks()
             .map(|tasks| tasks.iter().map(DownloadTaskSnapshot::from).collect())
             .map_err(|error| error.to_string())
     }
 
-    pub async fn enqueue(
+    async fn enqueue(
         &self,
         app: AppHandle,
         task: DownloadTask,
@@ -105,7 +105,7 @@ impl DownloadManager {
         Ok(snapshot)
     }
 
-    pub async fn pause(&self, app: &AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
+    async fn pause(&self, app: &AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
         if let Some(handle) = self.active.lock().await.remove(id) {
             handle.abort();
         }
@@ -121,7 +121,7 @@ impl DownloadManager {
         Ok(DownloadTaskSnapshot::from(&task))
     }
 
-    pub async fn resume(&self, app: AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
+    async fn resume(&self, app: AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
         if self.active.lock().await.contains_key(id) {
             return self.snapshot(id);
         }
@@ -141,7 +141,7 @@ impl DownloadManager {
         Ok(snapshot)
     }
 
-    pub async fn cancel(&self, app: &AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
+    async fn cancel(&self, app: &AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
         if let Some(handle) = self.active.lock().await.remove(id) {
             handle.abort();
         }
@@ -151,12 +151,11 @@ impl DownloadManager {
         task.error = None;
         task.updated_at_unix_ms = now_unix_ms();
         self.persist_and_emit(app, &task)?;
-        let _ = tokio::fs::remove_file(&task.destination).await;
-        let _ = tokio::fs::remove_file(manifest_path(&task.destination)).await;
+        remove_partial_files(&task).await;
         Ok(DownloadTaskSnapshot::from(&task))
     }
 
-    pub async fn retry(&self, app: AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
+    async fn retry(&self, app: AppHandle, id: &str) -> Result<DownloadTaskSnapshot, String> {
         if self.active.lock().await.contains_key(id) {
             return self.snapshot(id);
         }
@@ -180,9 +179,18 @@ impl DownloadManager {
         Ok(snapshot)
     }
 
-    pub async fn remove(&self, id: &str) -> Result<bool, String> {
+    async fn remove(&self, id: &str) -> Result<bool, String> {
         if let Some(handle) = self.active.lock().await.remove(id) {
             handle.abort();
+        }
+        if let Some(task) = self
+            .store
+            .download_task(id)
+            .map_err(|error| error.to_string())?
+        {
+            if task.state != DownloadState::Completed {
+                remove_partial_files(&task).await;
+            }
         }
         self.store
             .remove_download_task(id)
@@ -230,8 +238,6 @@ impl DownloadManager {
         self.persist_and_emit(app, task)?;
 
         let (url, headers) = self.fresh_request(task).await?;
-        task.url = url.clone();
-
         let downloader = SegmentedDownloader::with_resolver(
             self.resolver.clone(),
             DownloadConfig::default(),
@@ -263,18 +269,18 @@ impl DownloadManager {
                         continue;
                     }
                     let progress = *rx.borrow_and_update();
+                    task.state = DownloadState::Downloading;
+                    task.downloaded_bytes = progress.downloaded_bytes;
+                    task.total_bytes = progress.total_bytes;
                     let elapsed = last_progress_at.elapsed().as_secs_f64();
                     if elapsed >= 0.25 {
                         let delta = progress.downloaded_bytes.saturating_sub(last_progress_bytes);
                         task.bytes_per_second = delta as f64 / elapsed.max(0.001);
+                        task.updated_at_unix_ms = now_unix_ms();
+                        self.persist_and_emit(app, task)?;
                         last_progress_at = Instant::now();
                         last_progress_bytes = progress.downloaded_bytes;
                     }
-                    task.state = DownloadState::Downloading;
-                    task.downloaded_bytes = progress.downloaded_bytes;
-                    task.total_bytes = progress.total_bytes;
-                    task.updated_at_unix_ms = now_unix_ms();
-                    self.persist_and_emit(app, task)?;
                 }
             }
         }
@@ -362,7 +368,7 @@ fn manager(app: &AppHandle, state: &State<'_, AppState>) -> Result<&'static Down
 }
 
 #[tauri::command]
-pub fn list_downloads(
+pub(super) fn list_downloads(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<DownloadTaskSnapshot>, String> {
@@ -370,7 +376,7 @@ pub fn list_downloads(
 }
 
 #[tauri::command]
-pub async fn enqueue_download(
+pub(super) async fn enqueue_download(
     app: AppHandle,
     state: State<'_, AppState>,
     provider_id: String,
@@ -402,7 +408,7 @@ pub async fn enqueue_download(
 }
 
 #[tauri::command]
-pub async fn pause_download(
+pub(super) async fn pause_download(
     app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
@@ -411,7 +417,7 @@ pub async fn pause_download(
 }
 
 #[tauri::command]
-pub async fn resume_download(
+pub(super) async fn resume_download(
     app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
@@ -420,7 +426,7 @@ pub async fn resume_download(
 }
 
 #[tauri::command]
-pub async fn cancel_download(
+pub(super) async fn cancel_download(
     app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
@@ -429,7 +435,7 @@ pub async fn cancel_download(
 }
 
 #[tauri::command]
-pub async fn retry_download(
+pub(super) async fn retry_download(
     app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
@@ -438,12 +444,17 @@ pub async fn retry_download(
 }
 
 #[tauri::command]
-pub async fn remove_download(
+pub(super) async fn remove_download(
     app: AppHandle,
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<bool, String> {
     manager(&app, &state)?.remove(&task_id).await
+}
+
+async fn remove_partial_files(task: &DownloadTask) {
+    let _ = tokio::fs::remove_file(&task.destination).await;
+    let _ = tokio::fs::remove_file(manifest_path(&task.destination)).await;
 }
 
 fn manifest_path(destination: &Path) -> std::path::PathBuf {
