@@ -5,6 +5,7 @@
 
 pub mod download;
 pub mod library;
+pub mod library_store;
 pub mod mirror;
 pub mod network;
 pub mod provider;
@@ -12,6 +13,7 @@ pub mod storage;
 pub mod user_state;
 
 pub use library::{LibraryFormat, LibraryItem};
+pub use library_store::LibraryStore;
 pub use mirror::{
     MirrorEndpoint, MirrorRegistry, MirrorRuntime, MirrorSourceKind, MirrorState, ProbeMetrics,
     ScoreWeights, SourceCatalog, SourceDefinition,
