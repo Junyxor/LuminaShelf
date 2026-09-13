@@ -465,10 +465,7 @@ pub(super) async fn remove_download(
     manager(&app, &state)?.remove(&task_id).await
 }
 
-fn download_destination_dir(
-    app: &AppHandle,
-    requested: Option<&str>,
-) -> Result<PathBuf, String> {
+fn download_destination_dir(app: &AppHandle, requested: Option<&str>) -> Result<PathBuf, String> {
     #[cfg(target_os = "android")]
     {
         let _ = requested;
