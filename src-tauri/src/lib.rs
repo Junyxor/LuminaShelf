@@ -1,3 +1,6 @@
+mod download_control;
+
+use download_control::ControlledDownload;
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, DownloadState, SegmentedDownloader},
     library::scan_folder,
@@ -190,6 +193,58 @@ fn remove_download_task(state: State<'_, AppState>, task_id: String) -> Result<b
         .store
         .remove_download_task(&task_id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn pause_download(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
+    let accepted = download_control::pause(&task_id).await;
+    if accepted {
+        if let Some(task) = state
+            .store
+            .list_download_tasks()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|task| task.id == task_id)
+        {
+            state
+                .store
+                .update_download_task(
+                    &task_id,
+                    DownloadState::Paused,
+                    task.downloaded_bytes,
+                    task.total_bytes,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(accepted)
+}
+
+#[tauri::command]
+async fn cancel_download(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
+    let accepted = download_control::cancel(&task_id).await;
+    if accepted {
+        if let Some(task) = state
+            .store
+            .list_download_tasks()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|task| task.id == task_id)
+        {
+            state
+                .store
+                .update_download_task(
+                    &task_id,
+                    DownloadState::Cancelled,
+                    task.downloaded_bytes,
+                    task.total_bytes,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(accepted)
 }
 
 #[tauri::command]
@@ -534,39 +589,62 @@ async fn download_book(
         }
     });
 
-    let result = downloader
-        .download_to_with_context(
+    let result = download_control::run_controlled(
+        task_id.clone(),
+        downloader.download_to_with_context(
             url,
             destination.clone(),
             headers,
             Some(format!("{provider_id}:{book_id}")),
             tx,
-        )
-        .await;
+        ),
+    )
+    .await;
     let _ = monitor.await;
 
-    if let Err(error) = result {
-        let message = error.to_string();
-        let latest = state
-            .store
-            .list_download_tasks()
-            .ok()
-            .and_then(|tasks| tasks.into_iter().find(|task| task.id == task_id));
-        let downloaded = latest
-            .as_ref()
-            .map_or(resume_downloaded, |task| task.downloaded_bytes);
-        let total = latest
-            .as_ref()
-            .and_then(|task| task.total_bytes)
-            .or(resume_total);
-        let _ = state.store.update_download_task(
-            &task_id,
-            DownloadState::Failed,
-            downloaded,
-            total,
-            Some(&message),
-        );
-        return Err(message);
+    let latest = state
+        .store
+        .list_download_tasks()
+        .ok()
+        .and_then(|tasks| tasks.into_iter().find(|task| task.id == task_id));
+    let downloaded = latest
+        .as_ref()
+        .map_or(resume_downloaded, |task| task.downloaded_bytes);
+    let total = latest
+        .as_ref()
+        .and_then(|task| task.total_bytes)
+        .or(resume_total);
+
+    match result {
+        ControlledDownload::Paused => {
+            state
+                .store
+                .update_download_task(&task_id, DownloadState::Paused, downloaded, total, None)
+                .map_err(|error| error.to_string())?;
+            return Err("__LUMINA_PAUSED__".to_string());
+        }
+        ControlledDownload::Cancelled => {
+            state
+                .store
+                .update_download_task(&task_id, DownloadState::Cancelled, downloaded, total, None)
+                .map_err(|error| error.to_string())?;
+            return Err("__LUMINA_CANCELLED__".to_string());
+        }
+        ControlledDownload::AlreadyActive => {
+            return Err("download task is already active".to_string());
+        }
+        ControlledDownload::Finished(Err(error)) => {
+            let message = error.to_string();
+            let _ = state.store.update_download_task(
+                &task_id,
+                DownloadState::Failed,
+                downloaded,
+                total,
+                Some(&message),
+            );
+            return Err(message);
+        }
+        ControlledDownload::Finished(Ok(())) => {}
     }
 
     let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
@@ -751,6 +829,8 @@ pub fn run() {
             provider_descriptors,
             download_tasks,
             remove_download_task,
+            pause_download,
+            cancel_download,
             resolver_policy,
             set_resolver_policy,
             resolve_host,

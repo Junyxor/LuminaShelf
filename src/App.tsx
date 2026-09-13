@@ -313,6 +313,11 @@ export default function App() {
     }
   }
 
+  async function refreshDownloads() {
+    const persisted = await invoke<PersistedDownloadTask[]>("download_tasks");
+    setDownloads(restoreDownloads(persisted));
+  }
+
   async function runSearch(targetPage = 1) {
     if (!query.trim() || !selectedProvider || providerNeedsLogin) return;
     setSearching(true);
@@ -417,21 +422,18 @@ export default function App() {
         ...current.filter((item) => item.path !== receipt.item.path),
       ]);
     } catch (reason) {
-      setDownloads((current) => ({
-        ...current,
-        [key]: {
-          ...current[key],
-          key,
-          providerId,
-          bookId,
-          title,
-          format,
-          state: "failed",
-          downloadedBytes: current[key]?.downloadedBytes ?? 0,
-          error: String(reason),
-        },
-      }));
-      setError(String(reason));
+      const message = String(reason);
+      try {
+        await refreshDownloads();
+      } catch (refreshReason) {
+        setError(`${message} · 队列刷新失败：${String(refreshReason)}`);
+        return;
+      }
+      if (message.includes("__LUMINA_PAUSED__") || message.includes("__LUMINA_CANCELLED__")) {
+        return;
+      }
+      setError(message);
+
     }
   }
 
@@ -446,6 +448,38 @@ export default function App() {
 
   async function retryDownload(task: DownloadTask) {
     await queueDownload(task.providerId, task.bookId, task.title, task.format);
+  }
+
+  async function pauseDownload(task: DownloadTask) {
+    try {
+      const accepted = await invoke<boolean>("pause_download", { taskId: task.key });
+      if (!accepted) {
+        await refreshDownloads();
+        return;
+      }
+      setDownloads((current) => ({
+        ...current,
+        [task.key]: { ...current[task.key], state: "paused" },
+      }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function cancelDownload(task: DownloadTask) {
+    try {
+      const accepted = await invoke<boolean>("cancel_download", { taskId: task.key });
+      if (!accepted) {
+        await refreshDownloads();
+        return;
+      }
+      setDownloads((current) => ({
+        ...current,
+        [task.key]: { ...current[task.key], state: "cancelled" },
+      }));
+    } catch (reason) {
+      setError(String(reason));
+    }
   }
 
   async function removeDownload(task: DownloadTask) {
@@ -616,6 +650,8 @@ export default function App() {
                   <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
                   <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.error ?? task.path ?? (task.state === "paused" ? "上次退出时未完成，可继续" : "Rust segmented downloader")}</span></div>
                   <div className="download-actions">
+                    {task.state === "downloading" ? <button className="ghost-button" onClick={() => void pauseDownload(task)}>暂停</button> : null}
+                    {task.state === "downloading" ? <button className="ghost-button danger" onClick={() => void cancelDownload(task)}>取消</button> : null}
                     {canResume ? <button className="primary-button small" onClick={() => void retryDownload(task)}>继续</button> : null}
                     {!isActive ? <button className="ghost-button" onClick={() => void removeDownload(task)}>移除记录</button> : null}
                   </div>
