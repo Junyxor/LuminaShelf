@@ -154,6 +154,7 @@ impl LibraryStore {
     }
 
     pub fn list_existing(&self) -> Result<Vec<LibraryItem>> {
+        self.import_completed_downloads()?;
         self.prune_missing()?;
         self.list()
     }
@@ -181,6 +182,48 @@ impl LibraryStore {
             removed += conn.execute("DELETE FROM library_items WHERE path=?1", [path])?;
         }
         Ok(removed)
+    }
+
+    fn import_completed_downloads(&self) -> Result<usize> {
+        let completed = {
+            let conn = self.conn()?;
+            let has_download_tasks = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='download_tasks')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
+            if !has_download_tasks {
+                return Ok(0);
+            }
+            let mut statement = conn.prepare(
+                r#"SELECT title, provider_id, book_id, destination
+                   FROM download_tasks
+                   WHERE state='completed'
+                   ORDER BY updated_at_unix_ms DESC"#,
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        let mut imported = 0;
+        for (title, provider_id, book_id, destination) in completed {
+            let path = PathBuf::from(destination);
+            if !path.is_file() || self.by_path(&path)?.is_some() {
+                continue;
+            }
+            if let Ok(item) = LibraryItem::inspect(&path, Some(&title), provider_id, book_id) {
+                self.upsert(item)?;
+                imported += 1;
+            }
+        }
+        Ok(imported)
     }
 }
 
