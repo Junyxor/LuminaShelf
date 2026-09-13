@@ -12,8 +12,10 @@ The repository has moved beyond the original core-only milestone. The following 
 - account profile, quota and download-history workspace
 - native resumable downloader with bounded segmented HTTP Range concurrency
 - provider-authenticated download headers
-- download progress events bridged into the UI
-- deterministic per-book download targets so failed downloads can resume the same partial file
+- deterministic per-book download targets so failed downloads reuse the same partial file
+- persistent SQLite download queue with progress/state metadata
+- interrupted active downloads recovered as paused tasks after restart
+- download-center retry/continue and task-record removal actions
 - local ebook inspection and folder scanning
 - app-local System DNS / App Hosts / custom DNS / DoT / DoH resolver policy
 - live resolver preferences and runtime resolution tests
@@ -49,6 +51,7 @@ BookProvider registry
         ├── Mirror runtime / scoring
         ├── AppResolver (Hosts / DNS / DoH / DoT)
         ├── Native resumable segmented downloader
+        ├── SQLite task / account / reading state
         └── Local library inspection
 ```
 
@@ -65,9 +68,11 @@ BookProvider registry
 
 Downloads are performed inside LuminaShelf by the Rust downloader rather than being handed to a browser.
 
-For large files, the downloader can use bounded concurrent HTTP Range segments and stores a sidecar resume manifest next to the destination. The Tauri bridge now derives a stable destination from provider + book identity, so retrying the same book reuses the same destination and resume manifest instead of silently creating `Book (2).epub` and starting again.
+For large files, the downloader can use bounded concurrent HTTP Range segments and stores a sidecar resume manifest next to the destination. The Tauri bridge derives a stable destination from provider + book identity, so retrying the same book reuses the same destination and resume manifest instead of silently creating `Book (2).epub` and starting again.
 
-The current UI download list is still process-local. Persisting the task queue, explicit pause/cancel controls and background transfer lifecycle are the next download-manager milestone.
+The task queue itself is persisted in the app SQLite database. It stores non-secret task metadata only: provider/book identity, format, destination path, state, progress and errors. Temporary acquisition URLs, provider headers and session secrets are not written into the queue. If the app exits while a transfer is queued/connecting/downloading/verifying, that task is recovered as `paused` on the next launch. Pressing Continue requests a fresh provider URL and resumes against the existing file/segment manifest.
+
+Explicit pause/cancel while the process remains running and a true Android background-transfer lifecycle are still future milestones.
 
 ## Build checks
 
@@ -84,8 +89,8 @@ Android builds are also validated by `.github/workflows/android-ci.yml`.
 
 ## Next milestones
 
-1. Persist download tasks and restore interrupted transfers after app restart.
-2. Add pause / resume / cancel / retry controls around the Rust transfer engine.
+1. Add explicit pause / cancel controls to the live Rust transfer engine.
+2. Add Android background-transfer lifecycle / foreground-service behavior where appropriate.
 3. Add Android secure credential/session storage so users do not have to log in after every restart.
 4. Replace free-form mobile filesystem path inputs with platform-native directory/file selection where possible.
 5. Add EPUB reading first, then PDF reading/open-with integration.
