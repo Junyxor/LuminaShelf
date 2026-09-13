@@ -61,7 +61,18 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
 
       - name: Build arm64 debug APK
-        run: npm run tauri -- android build --debug --apk --target aarch64
+        shell: bash
+        run: |
+          set +e
+          npm run tauri -- android build --debug --apk --target aarch64 > /tmp/android-build.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "=== Android build key errors ==="
+            grep -n -E 'error\[|error:|FAILED|undefined reference|cannot find|keyring|jni|ndk|linker' /tmp/android-build.log | tail -n 120 || true
+            echo "=== Android build tail ==="
+            tail -n 160 /tmp/android-build.log
+            exit "$status"
+          fi
 
       - name: Stage APK
         shell: bash
