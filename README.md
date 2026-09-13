@@ -1,65 +1,109 @@
 # LuminaShelf · 星书
 
-LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri UI shell.
+LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri 2 + React shell, with Android as the primary mobile target.
 
 ## Current repository state
 
-This first visible GitHub milestone lands the **Rust core** before the UI shell so `main` starts from a coherent slice instead of an empty repository.
+The project now has a usable end-to-end application path rather than only a core prototype.
 
-Implemented in this commit:
+Implemented:
 
 - app-local System DNS / custom DNS / DoH / DoT resolver
 - exact + wildcard App Hosts
-- reqwest resolver adapter so provider/download traffic shares the same network policy
-- mirror registry with provenance merging and address hints
-- bounded mirror-source subscriptions
-- split DNS / TCP / TLS / TTFB / throughput probes
-- Happy-Eyeballs address racing
-- mirror scoring and health state
-- native resumable downloader with bounded segmented HTTP Range concurrency
-- local ebook file inspection and bounded folder scanning
+- reqwest resolver adapter so provider and download traffic share the same network policy
+- mirror registry, probing, ranking and runtime origin coordination
+- split DNS / TCP / TLS / TTFB / throughput probes and Happy-Eyeballs address racing
 - provider registry and `BookProvider` ABI
 - Project Gutenberg / Gutendex reference provider
-- Z-Library EAPI provider for authenticated search/profile/history/acquisition
+- authenticated Z-Library EAPI search, profile, quota, history and acquisition flow
+- native resumable downloader with bounded segmented HTTP Range concurrency and retries
+- SQLite-backed persistent download queue
+- pause / resume / retry / cancel / task cleanup and restart recovery
+- local ebook file inspection and bounded folder scanning
+- React search, book details, downloads, library, account and settings workspaces
+- Android/Material-oriented mobile UI with bottom navigation, safe-area handling and bottom-sheet details
+- Android download notifications driven by Rust task state
+- arm64 Android debug APK GitHub Actions build and artifact upload
 
 ## Architecture
 
 ```text
-UI / Tauri shell                 (next repository slice)
+React / Tauri 2 UI
+        │
+        ├── Search / details / account / settings
+        ├── Persistent download task controls
+        └── Android-native mobile presentation
         │
         ▼
-BookProvider registry
-   ├─ Gutendex
-   └─ Z-Library EAPI
+Tauri command + event bridge
         │
-        ├── Mirror Registry / scoring
-        ├── AppResolver (Hosts / DNS / DoH / DoT)
-        ├── Native segmented downloader
-        └── Local library inspection
+        ├── SQLite state / download tasks
+        ├── Android notification surface
+        └── Provider orchestration
+        │
+        ▼
+Rust Core
+   ├─ BookProvider registry
+   │   ├─ Gutendex
+   │   └─ Z-Library EAPI
+   ├─ Mirror Registry / scoring
+   ├─ AppResolver (Hosts / DNS / DoH / DoT)
+   ├─ Segmented resumable downloader
+   └─ Local library inspection
 ```
 
-The Tauri shell, SQLite account/favorites/reading state, secure credential vault, cover proxy/cache, mobile UI and Android APK workflow are the next commits. Those pieces already exist in the local v0.5 working snapshot and are being brought into this repository in reviewable slices.
+### Download path
+
+Downloads intentionally stay inside LuminaShelf rather than being delegated to Android DownloadManager:
+
+```text
+Book -> enqueue_download -> Rust DownloadManager -> SegmentedDownloader
+                                  │
+                                  ├─ Provider session + fresh acquisition URL
+                                  ├─ App DNS / DoH / Hosts policy
+                                  ├─ HTTP Range segmentation + retry
+                                  ├─ resume manifest
+                                  ├─ SQLite task state
+                                  └─ UI events / Android notification
+```
+
+Provider acquisition URLs are refreshed when a task starts or resumes instead of persisting temporary signed URLs in SQLite. Interrupted active tasks are restored as paused on the next app start and can resume through the existing partial file / segment manifest.
 
 ## Boundaries
 
 - Z-Library integration uses the EAPI provider path; no HTML/JS anti-bot challenge solver is part of the core.
 - Remote hosts lists only become candidate address hints; they are never silently written to OS Hosts.
 - TLS hostname validation stays enabled even when an address hint is used.
-- Provider secret persistence belongs to the secure credential layer, not generic SQLite metadata.
+- Provider secrets must not be stored in generic SQLite metadata; secure credential persistence remains a dedicated layer.
+- Android notifications expose download state but are not yet a full Foreground Service. Strong background execution while the app is suspended or killed is a separate Android-native milestone.
 
-## Build the core
+## Build and checks
 
-Requires Rust 1.88+.
+Requires Rust 1.88+ and Node.js for the Tauri shell.
 
 ```bash
+cargo fmt --all -- --check
 cargo test -p lumina-core
 cargo clippy -p lumina-core --all-targets -- -D warnings
+npm install
+npm run build
+cargo check -p lumina-shelf-desktop
 ```
 
-## Near-term repository commits
+Android arm64 debug APK:
 
-1. SQLite WAL state layer + accounts/favorites/reading progress.
-2. Tauri 2 command bridge and React workspaces.
-3. Android-native credential vault and mobile navigation.
-4. arm64 debug APK GitHub Actions workflow.
-5. EPUB/PDF reader work and the final production icon.
+```bash
+npm install
+npm run tauri -- android init --ci
+npm run tauri -- android build --debug --apk --target aarch64
+```
+
+The repository also runs these checks in GitHub Actions and uploads the Android debug APK as a workflow artifact.
+
+## Near-term work
+
+1. Android Foreground Service integration for stronger long-running background downloads.
+2. Android Storage Access Framework file/folder picker instead of manual path entry.
+3. Secure Android credential vault for provider secrets.
+4. EPUB/PDF reader and persisted reading progress integration.
+5. Cover proxy/cache, production icon, signed Android release pipeline and broader device testing.
