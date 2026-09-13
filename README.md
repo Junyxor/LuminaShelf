@@ -10,6 +10,7 @@ The repository has moved beyond the original core-only milestone. The following 
 - authenticated Z-Library EAPI provider
 - automatic/manual Z-Library EAPI origin selection
 - account profile, quota and download-history workspace
+- Android secure Z-Library session persistence and startup restore
 - native resumable downloader with bounded segmented HTTP Range concurrency
 - provider-authenticated download headers
 - deterministic per-book download targets so failed downloads reuse the same partial file
@@ -51,6 +52,7 @@ BookProvider registry
         │
         ├── Mirror runtime / scoring
         ├── AppResolver (Hosts / DNS / DoH / DoT)
+        ├── Android secure session vault
         ├── Native resumable segmented downloader
         ├── Live transfer control (pause / cancel)
         ├── SQLite task / account / reading state
@@ -61,10 +63,15 @@ BookProvider registry
 
 - Integration uses the EAPI provider path.
 - No HTML/JS anti-bot challenge solver is part of the client core.
-- Passwords are not persisted by the current implementation.
-- The current Z-Library session remains in Rust process memory, so reopening the app requires signing in again.
+- Passwords are never persisted.
+- On Android, only the Z-Library session identity (`user_id` + `user_key`) is stored through the native secure keyring backend and restored during app bootstrap.
+- The Android keyring backend keeps the credential payload in encrypted application storage while the encryption key is protected by Android Keystore.
+- Desktop currently keeps the Z-Library session in process memory only, so desktop users still sign in again after restarting the app.
 - EAPI origin selection is persisted because it is non-secret configuration.
+- Logout clears the Android secure session entry before clearing the in-memory session, so the UI does not claim a complete logout if secure deletion fails.
 - TLS hostname validation remains enabled.
+
+Tauri generates the Android project on demand. `npm run android:init` and Android CI both run `scripts/patch-android-keyring.mjs` immediately after generation so `MainActivity` initializes the Android NDK context required by the native keyring backend. The patcher validates the application package and refuses to silently patch an unexpected identifier.
 
 ## Download model
 
@@ -89,12 +96,17 @@ npm install
 npm run build
 ```
 
+For a local Android project initialization that includes the secure-session JNI hook:
+
+```bash
+npm run android:init
+```
+
 Android builds are also validated by `.github/workflows/android-ci.yml`.
 
 ## Next milestones
 
 1. Add Android background-transfer lifecycle / foreground-service behavior where appropriate.
-2. Add Android secure credential/session storage so users do not have to log in after every restart.
-3. Replace free-form mobile filesystem path inputs with platform-native directory/file selection where possible.
-4. Add EPUB reading first, then PDF reading/open-with integration.
-5. Continue breaking the large React shell into focused mobile-friendly screens/components.
+2. Replace free-form mobile filesystem path inputs with platform-native directory/file selection where possible.
+3. Add EPUB reading first, then PDF reading/open-with integration.
+4. Continue breaking the large React shell into focused mobile-friendly screens/components.
