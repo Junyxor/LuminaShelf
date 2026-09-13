@@ -12,19 +12,12 @@ fn store(app: &AppHandle) -> Result<&'static LibraryStore, String> {
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
-    let store = LibraryStore::open(config_dir.join("state.sqlite3"))
-        .map_err(|error| error.to_string())?;
+    let store =
+        LibraryStore::open(config_dir.join("state.sqlite3")).map_err(|error| error.to_string())?;
     let _ = LIBRARY_STORE.set(store);
     LIBRARY_STORE
         .get()
         .ok_or_else(|| "failed to initialize library store".to_string())
-}
-
-pub(super) fn persist_library_item(
-    app: &AppHandle,
-    item: LibraryItem,
-) -> Result<LibraryItem, String> {
-    store(app)?.upsert(item).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -51,8 +44,8 @@ pub(super) fn scan_library_persisted(
     paths
         .into_iter()
         .map(|path| {
-            let item = LibraryItem::inspect(path, None, None, None)
-                .map_err(|error| error.to_string())?;
+            let item =
+                LibraryItem::inspect(path, None, None, None).map_err(|error| error.to_string())?;
             store.upsert(item).map_err(|error| error.to_string())
         })
         .collect()
