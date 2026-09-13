@@ -208,12 +208,14 @@ export default function App() {
       invoke<ProviderDescriptor[]>("provider_descriptors"),
       invoke<ZLibraryAccountStatus>("zlibrary_status"),
       invoke<DownloadTask[]>("list_downloads"),
+      invoke<LibraryItem[]>("list_library"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus, nextDownloads]) => {
+      .then(([nextStatus, nextProviders, nextZlibraryStatus, nextDownloads, nextLibrary]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
         setZlibraryStatus(nextZlibraryStatus);
         setDownloads(Object.fromEntries(nextDownloads.map((task) => [task.id, task])));
+        setLibraryItems(nextLibrary);
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -234,6 +236,9 @@ export default function App() {
         const { task, item } = event.payload;
         setDownloads((current) => ({ ...current, [task.id]: task }));
         setLibraryItems((current) => [item, ...current.filter((entry) => entry.path !== item.path)]);
+        void invoke<LibraryItem[]>("list_library")
+          .then((items) => setLibraryItems(items))
+          .catch((reason) => setError(String(reason)));
       }),
     ]).then((unlisteners) => {
       if (disposed) {
@@ -403,7 +408,7 @@ export default function App() {
     setLibraryLoading(true);
     setError(null);
     try {
-      const items = await invoke<LibraryItem[]>("scan_library", {
+      const items = await invoke<LibraryItem[]>("scan_library_persisted", {
         path,
         recursive: settings.recursiveLibraryScan,
         maxItems: 1000,
@@ -436,7 +441,7 @@ export default function App() {
 
         <section className="cards">
           <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
-          <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>本轮已识别本地书籍</small></article>
+          <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>已登记到持久书架</small></article>
           <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 持久化任务</small></article>
         </section>
 
@@ -582,7 +587,7 @@ export default function App() {
             <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
             <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
           </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 支持 EPUB / PDF / MOBI / AZW3 / TXT / CBZ / DJVU</div>
+          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 扫描结果会保存到本地书架</div>
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
@@ -594,7 +599,7 @@ export default function App() {
             ))}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书，完成后会自动进入本轮书架。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书；登记后重启应用也会保留。</p></section>
         )}
       </>
     );
