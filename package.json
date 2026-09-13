@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0 --port 1420",
     "build": "tsc --noEmit && vite build",
     "tauri": "tauri",
-    "android:init": "tauri android init",
+    "android:init": "tauri android init && node scripts/patch-android-keyring.mjs",
+    "android:prepare": "node scripts/patch-android-keyring.mjs",
     "android:apk": "tauri android build --debug --apk --target aarch64"
   },
   "dependencies": {
