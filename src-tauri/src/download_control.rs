@@ -1,5 +1,8 @@
-use std::{collections::HashMap, future::Future, sync::OnceLock};
-use tokio::sync::{watch, RwLock};
+use std::{collections::HashMap, future::Future, sync::OnceLock, time::Duration};
+use tokio::{
+    sync::{watch, RwLock},
+    time::{sleep, Instant},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransferControl {
@@ -54,16 +57,34 @@ where
     outcome
 }
 
+async fn signal_and_wait(task_id: &str, control: TransferControl) -> bool {
+    let sender = {
+        let active = active_transfers().read().await;
+        active.get(task_id).cloned()
+    };
+    let Some(sender) = sender else {
+        return false;
+    };
+    if sender.send(control).is_err() {
+        return false;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if !active_transfers().read().await.contains_key(task_id) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return true;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub async fn pause(task_id: &str) -> bool {
-    let active = active_transfers().read().await;
-    active
-        .get(task_id)
-        .is_some_and(|sender| sender.send(TransferControl::Paused).is_ok())
+    signal_and_wait(task_id, TransferControl::Paused).await
 }
 
 pub async fn cancel(task_id: &str) -> bool {
-    let active = active_transfers().read().await;
-    active
-        .get(task_id)
-        .is_some_and(|sender| sender.send(TransferControl::Cancelled).is_ok())
+    signal_and_wait(task_id, TransferControl::Cancelled).await
 }
