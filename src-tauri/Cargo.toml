@@ -20,3 +20,4 @@ serde_json.workspace = true
 tokio.workspace = true
 url.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2.4.0"
