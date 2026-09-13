@@ -29,34 +29,41 @@ if (packageMatch[1] !== "app.luminashelf.client") {
   throw new Error(`Unexpected Android package ${packageMatch[1]}; update the Rust JNI symbol before changing the Tauri identifier.`);
 }
 
-if (!source.includes("initNdkContext")) {
-  const packageLine = packageMatch[0];
-  if (!source.includes("import android.os.Bundle")) {
-    source = source.replace(packageLine, `${packageLine}\n\nimport android.content.Context\nimport android.os.Bundle`);
-  } else if (!source.includes("import android.content.Context")) {
+if (!source.includes("import android.content.Context")) {
+  if (source.includes("import android.os.Bundle")) {
     source = source.replace("import android.os.Bundle", "import android.content.Context\nimport android.os.Bundle");
-  }
-
-  const classPattern = /class\s+MainActivity\s*:\s*TauriActivity\(\)\s*\{?[\s\S]*?\}?\s*$/m;
-  const simplePattern = /class\s+MainActivity\s*:\s*TauriActivity\(\)\s*$/m;
-  const replacement = `class MainActivity : TauriActivity() {
-  private external fun initNdkContext(context: Context)
-
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    initNdkContext(this.applicationContext)
-  }
-}`;
-
-  if (simplePattern.test(source)) {
-    source = source.replace(simplePattern, replacement);
-  } else if (classPattern.test(source)) {
-    source = source.replace(classPattern, replacement);
   } else {
-    throw new Error("MainActivity shape is not recognized; refusing to patch it automatically.");
+    source = source.replace(packageMatch[0], `${packageMatch[0]}\n\nimport android.content.Context`);
   }
-
-  await fs.writeFile(activityPath, source);
 }
 
+const classAnchor = "class MainActivity : TauriActivity() {";
+if (!source.includes(classAnchor)) {
+  throw new Error("MainActivity shape is not recognized; refusing to patch it automatically.");
+}
+
+if (!source.includes("private external fun initNdkContext")) {
+  source = source.replace(
+    classAnchor,
+    `${classAnchor}\n  private external fun initNdkContext(context: Context)`,
+  );
+}
+
+if (!source.includes("initNdkContext(this.applicationContext)")) {
+  const superCall = "    super.onCreate(savedInstanceState)";
+  if (source.includes(superCall)) {
+    source = source.replace(
+      superCall,
+      `${superCall}\n    initNdkContext(this.applicationContext)`,
+    );
+  } else {
+    const declaration = "  private external fun initNdkContext(context: Context)";
+    source = source.replace(
+      declaration,
+      `${declaration}\n\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n    initNdkContext(this.applicationContext)\n  }`,
+    );
+  }
+}
+
+await fs.writeFile(activityPath, source);
 console.log(`Android secure-storage activity patch ready: ${path.relative(process.cwd(), activityPath)}`);
