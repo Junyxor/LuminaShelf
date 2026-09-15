@@ -1,11 +1,11 @@
 use crate::{
-    library::now_unix_ms,
+    library::{now_unix_ms, LibraryFormat, LibraryItem},
     user_state::{AccountProfile, FavoriteBook, ReadingProgress},
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -80,6 +80,22 @@ impl StateStore {
               fraction REAL NOT NULL DEFAULT 0,
               updated_at_unix_ms INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS library_items (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              authors_json TEXT NOT NULL,
+              path TEXT NOT NULL UNIQUE,
+              format TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL,
+              added_at_unix_ms INTEGER NOT NULL,
+              modified_at_unix_ms INTEGER,
+              source_provider TEXT,
+              source_book_id TEXT,
+              updated_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS library_items_updated_idx
+              ON library_items(updated_at_unix_ms DESC);
             "#,
         )?;
         Ok(())
@@ -217,6 +233,134 @@ impl StateStore {
         Ok(output)
     }
 
+    pub fn upsert_library_item(&self, item: &LibraryItem) -> Result<()> {
+        let authors = serde_json::to_string(&item.authors)?;
+        let size_bytes = i64::try_from(item.size_bytes).context("library item is too large")?;
+        self.conn()?.execute(
+            r#"INSERT INTO library_items(
+                 id, title, authors_json, path, format, size_bytes, added_at_unix_ms,
+                 modified_at_unix_ms, source_provider, source_book_id, updated_at_unix_ms
+               ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+               ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title,
+                 authors_json=excluded.authors_json,
+                 path=excluded.path,
+                 format=excluded.format,
+                 size_bytes=excluded.size_bytes,
+                 modified_at_unix_ms=excluded.modified_at_unix_ms,
+                 source_provider=COALESCE(excluded.source_provider, library_items.source_provider),
+                 source_book_id=COALESCE(excluded.source_book_id, library_items.source_book_id),
+                 updated_at_unix_ms=excluded.updated_at_unix_ms"#,
+            params![
+                item.id,
+                item.title,
+                authors,
+                item.path.to_string_lossy(),
+                item.format.as_str(),
+                size_bytes,
+                item.added_at_unix_ms,
+                item.modified_at_unix_ms,
+                item.source_provider,
+                item.source_book_id,
+                now_unix_ms(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_library_items(&self, items: &[LibraryItem]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let updated_at = now_unix_ms();
+        for item in items {
+            let authors = serde_json::to_string(&item.authors)?;
+            let size_bytes = i64::try_from(item.size_bytes).context("library item is too large")?;
+            tx.execute(
+                r#"INSERT INTO library_items(
+                     id, title, authors_json, path, format, size_bytes, added_at_unix_ms,
+                     modified_at_unix_ms, source_provider, source_book_id, updated_at_unix_ms
+                   ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title=excluded.title,
+                     authors_json=excluded.authors_json,
+                     path=excluded.path,
+                     format=excluded.format,
+                     size_bytes=excluded.size_bytes,
+                     modified_at_unix_ms=excluded.modified_at_unix_ms,
+                     source_provider=COALESCE(excluded.source_provider, library_items.source_provider),
+                     source_book_id=COALESCE(excluded.source_book_id, library_items.source_book_id),
+                     updated_at_unix_ms=excluded.updated_at_unix_ms"#,
+                params![
+                    item.id,
+                    item.title,
+                    authors,
+                    item.path.to_string_lossy(),
+                    item.format.as_str(),
+                    size_bytes,
+                    item.added_at_unix_ms,
+                    item.modified_at_unix_ms,
+                    item.source_provider,
+                    item.source_book_id,
+                    updated_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_library_items(&self) -> Result<Vec<LibraryItem>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare(
+            r#"SELECT id, title, authors_json, path, format, size_bytes, added_at_unix_ms,
+                      modified_at_unix_ms, source_provider, source_book_id
+               FROM library_items
+               ORDER BY updated_at_unix_ms DESC, title COLLATE NOCASE"#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        })?;
+        let mut output = Vec::new();
+        for row in rows {
+            let (
+                id,
+                title,
+                authors_json,
+                path,
+                format,
+                size_bytes,
+                added_at_unix_ms,
+                modified_at_unix_ms,
+                source_provider,
+                source_book_id,
+            ) = row?;
+            output.push(LibraryItem {
+                id,
+                title,
+                authors: serde_json::from_str(&authors_json).unwrap_or_default(),
+                path: PathBuf::from(path),
+                format: library_format_from_str(&format),
+                size_bytes: u64::try_from(size_bytes.max(0)).unwrap_or_default(),
+                added_at_unix_ms,
+                modified_at_unix_ms,
+                source_provider,
+                source_book_id,
+            });
+        }
+        Ok(output)
+    }
+
     pub fn set_reading_progress(&self, progress: ReadingProgress) -> Result<()> {
         let progress = progress.normalized();
         self.conn()?.execute(
@@ -234,6 +378,19 @@ impl StateStore {
             [library_id],
             |row| Ok(ReadingProgress { library_id: row.get(0)?, locator: row.get(1)?, fraction: row.get(2)?, updated_at_unix_ms: row.get(3)? }),
         ).optional().map_err(Into::into)
+    }
+}
+
+fn library_format_from_str(value: &str) -> LibraryFormat {
+    match value {
+        "epub" => LibraryFormat::Epub,
+        "pdf" => LibraryFormat::Pdf,
+        "mobi" => LibraryFormat::Mobi,
+        "azw3" => LibraryFormat::Azw3,
+        "txt" => LibraryFormat::Txt,
+        "cbz" => LibraryFormat::Cbz,
+        "djvu" => LibraryFormat::Djvu,
+        _ => LibraryFormat::Other,
     }
 }
 
@@ -284,5 +441,32 @@ mod tests {
             store.reading_progress("book").unwrap().unwrap().fraction,
             1.0
         );
+    }
+
+    #[test]
+    fn library_items_round_trip() {
+        let store = StateStore::open_memory().unwrap();
+        let item = LibraryItem {
+            id: "book-1".into(),
+            title: "测试书".into(),
+            authors: vec!["作者".into()],
+            path: PathBuf::from("/tmp/test.epub"),
+            format: LibraryFormat::Epub,
+            size_bytes: 1024,
+            added_at_unix_ms: 7,
+            modified_at_unix_ms: Some(8),
+            source_provider: Some("zlibrary".into()),
+            source_book_id: Some("42".into()),
+        };
+        store.upsert_library_item(&item).unwrap();
+        let items = store.list_library_items().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, item.id);
+        assert_eq!(items[0].title, item.title);
+        assert_eq!(items[0].authors, item.authors);
+        assert_eq!(items[0].path, item.path);
+        assert_eq!(items[0].format, item.format);
+        assert_eq!(items[0].source_provider, item.source_provider);
+        assert_eq!(items[0].source_book_id, item.source_book_id);
     }
 }
