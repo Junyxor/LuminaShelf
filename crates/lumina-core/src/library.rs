@@ -171,10 +171,7 @@ fn infer_title_and_authors(stem: &str) -> (String, Vec<String>) {
             return (title.to_string(), vec![author.to_string()]);
         }
     }
-    (
-        stem.replace(['_', '.'], " ").trim().to_string(),
-        Vec::new(),
-    )
+    (stem.replace(['_', '.'], " ").trim().to_string(), Vec::new())
 }
 
 fn expand_home(path: &Path) -> PathBuf {
