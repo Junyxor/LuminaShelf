@@ -1,0 +1,167 @@
+.pdf-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(8, 12, 24, 0.68);
+  backdrop-filter: blur(8px);
+}
+
+.pdf-shell {
+  width: min(1180px, 100%);
+  height: min(900px, calc(100vh - 36px));
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  border-radius: 24px;
+  background: #242832;
+  color: #edf1f7;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+}
+
+.pdf-toolbar,
+.pdf-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #1c2028;
+}
+
+.pdf-toolbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.pdf-footer {
+  justify-content: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.pdf-title {
+  min-width: 0;
+  flex: 1;
+  text-align: center;
+}
+
+.pdf-title strong,
+.pdf-title small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-title small {
+  margin-top: 3px;
+  color: #9da8b9;
+}
+
+.pdf-stage {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  place-items: start center;
+  padding: 24px;
+  background: #353a46;
+}
+
+.pdf-canvas-wrap {
+  min-width: max-content;
+  background: white;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28);
+  transition: opacity 120ms ease;
+}
+
+.pdf-canvas-wrap.rendering {
+  opacity: 0.72;
+}
+
+.pdf-canvas-wrap canvas {
+  display: block;
+  max-width: none;
+}
+
+.pdf-status {
+  align-self: center;
+  justify-self: center;
+  padding: 16px 20px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.2);
+  color: #dbe2ee;
+}
+
+.pdf-status.error {
+  color: #ffb4b4;
+}
+
+.pdf-zoom-controls,
+.pdf-page-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdf-zoom-controls button,
+.pdf-page-jump input {
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07);
+  color: inherit;
+}
+
+.pdf-zoom-controls button {
+  width: 34px;
+  cursor: pointer;
+}
+
+.pdf-zoom-controls strong {
+  min-width: 50px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.pdf-page-jump input {
+  width: 70px;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.pdf-page-jump span {
+  color: #aeb8c7;
+}
+
+.pdf-shell .ghost-button {
+  color: #edf1f7;
+}
+
+@media (max-width: 720px) {
+  .pdf-backdrop {
+    padding: 0;
+  }
+
+  .pdf-shell {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .pdf-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .pdf-title {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .pdf-stage {
+    padding: 12px;
+  }
+
+  .pdf-footer {
+    padding: 10px 12px;
+  }
+}
