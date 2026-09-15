@@ -1,15 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  GlobalWorkerOptions,
-  getDocument,
-  type PDFDocumentLoadingTask,
-  type PDFDocumentProxy,
-} from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import "./pdf.css";
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+type PdfJsRuntime = typeof import("pdfjs-dist");
+
+let pdfJsRuntimePromise: Promise<PdfJsRuntime> | null = null;
+
+function loadPdfJsRuntime(): Promise<PdfJsRuntime> {
+  if (!pdfJsRuntimePromise) {
+    pdfJsRuntimePromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.mjs?url"),
+    ]).then(([pdfJs, worker]) => {
+      pdfJs.GlobalWorkerOptions.workerSrc = worker.default;
+      return pdfJs;
+    });
+  }
+  return pdfJsRuntimePromise;
+}
 
 type ReadingProgress = {
   libraryId: string;
@@ -47,12 +56,13 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const [buffer, progress] = await Promise.all([
+        const [pdfJs, buffer, progress] = await Promise.all([
+          loadPdfJsRuntime(),
           invoke<ArrayBuffer>("read_pdf_bytes", { path }),
           invoke<ReadingProgress | null>("reading_progress", { libraryId }),
         ]);
         if (cancelled) return;
-        loadingTask = getDocument({ data: new Uint8Array(buffer) });
+        loadingTask = pdfJs.getDocument({ data: new Uint8Array(buffer) });
         const loadedDocument = await loadingTask.promise;
         if (cancelled) return;
         const savedPage = progress?.locator?.startsWith("page:")
