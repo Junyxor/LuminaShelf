@@ -14,6 +14,8 @@ jobs:
         with:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux webview dependencies
         run: |
@@ -23,5 +25,9 @@ jobs:
         run: npm install
       - name: Build frontend
         run: npm run build
+      - name: Check Tauri formatting
+        run: cargo fmt -p lumina-shelf-desktop -- --check
       - name: Check Tauri bridge
         run: cargo check -p lumina-shelf-desktop
+      - name: Test Tauri bridge
+        run: cargo test -p lumina-shelf-desktop --lib

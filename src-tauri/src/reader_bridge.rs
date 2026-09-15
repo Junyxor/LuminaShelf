@@ -1,6 +1,4 @@
-use lumina_core::{
-    open_book_chapter, open_book_metadata, ReaderBookMetadata, ReaderChapter,
-};
+use lumina_core::{open_book_chapter, open_book_metadata, ReaderBookMetadata, ReaderChapter};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -174,7 +172,10 @@ mod tests {
             let id = index.to_string();
             cache.insert(key(&id), chapter(&id));
         }
-        assert_eq!(cache.get(&key("0")).map(|value| value.id), Some("0".to_string()));
+        assert_eq!(
+            cache.get(&key("0")).map(|value| value.id),
+            Some("0".to_string())
+        );
         cache.insert(key("next"), chapter("next"));
         assert_eq!(cache.entries.len(), MAX_CACHED_CHAPTERS);
         assert!(cache.get(&key("1")).is_none());
