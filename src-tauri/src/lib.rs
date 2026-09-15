@@ -338,7 +338,16 @@ async fn book_details(
 }
 
 #[tauri::command]
+fn library_items(state: State<'_, AppState>) -> Result<Vec<LibraryItem>, String> {
+    state
+        .state_store
+        .list_library_items()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn scan_library(
+    state: State<'_, AppState>,
     path: String,
     recursive: Option<bool>,
     max_items: Option<usize>,
@@ -349,10 +358,15 @@ fn scan_library(
         max_items.unwrap_or(500).clamp(1, 5000),
     )
     .map_err(|error| error.to_string())?;
-    paths
+    let items = paths
         .into_iter()
         .map(|path| LibraryItem::inspect(path, None, None, None).map_err(|error| error.to_string()))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    state
+        .state_store
+        .upsert_library_items(&items)
+        .map_err(|error| error.to_string())?;
+    Ok(items)
 }
 
 #[tauri::command]
@@ -460,6 +474,10 @@ async fn download_book(
     result.map_err(|error| error.to_string())?;
 
     let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
+        .map_err(|error| error.to_string())?;
+    state
+        .state_store
+        .upsert_library_item(&item)
         .map_err(|error| error.to_string())?;
     Ok(DownloadReceipt {
         path: destination,
@@ -636,6 +654,7 @@ pub fn run() {
             zlibrary_history,
             search_books,
             book_details,
+            library_items,
             scan_library,
             open_local_book,
             reading_progress,

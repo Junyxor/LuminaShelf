@@ -200,11 +200,13 @@ export default function App() {
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
       invoke<ZLibraryAccountStatus>("zlibrary_status"),
+      invoke<LibraryItem[]>("library_items"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus]) => {
+      .then(([nextStatus, nextProviders, nextZlibraryStatus, nextLibraryItems]) => {
         setStatus(nextStatus);
         setProviders(nextProviders);
         setZlibraryStatus(nextZlibraryStatus);
+        setLibraryItems(nextLibraryItems);
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -479,7 +481,7 @@ export default function App() {
 
         <section className="cards">
           <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
-          <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>本轮已识别本地书籍</small></article>
+          <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>已持久化本地书籍</small></article>
           <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 当前任务</small></article>
         </section>
 
@@ -629,7 +631,7 @@ export default function App() {
             })}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书，完成后会自动进入本轮书架。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书。书架会持久化保存，下次启动自动恢复。</p></section>
         )}
       </>
     );
