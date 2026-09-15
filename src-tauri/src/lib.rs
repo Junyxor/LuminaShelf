@@ -1,9 +1,10 @@
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
-    library::scan_folder,
-    AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
-    ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    library::{now_unix_ms, scan_folder},
+    open_book as open_reader_book, AppResolver, BookDetails, BookFormat, GutendexProvider,
+    LibraryItem, ProviderDescriptor, ProviderRegistry, ReaderBook, ReadingProgress, ReqwestResolver,
+    ResolveResult, ResolverPolicy, SearchQuery, SearchResult, StateStore, ZLibraryHistoryPage,
+    ZLibraryProfile, ZLibraryProvider,
 };
 use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,7 @@ struct AppState {
     resolver: AppResolver,
     providers: ProviderRegistry,
     resolver_policy_path: PathBuf,
+    state_store: StateStore,
     zlibrary: Arc<ZLibraryProvider>,
     zlibrary_probe: Client,
     zlibrary_config: RwLock<ZLibraryConfig>,
@@ -48,6 +50,8 @@ impl AppState {
                 AppResolver::system().map_err(|error| error.to_string())?
             }
         };
+        let state_store = StateStore::open(config_dir.join("state.sqlite3"))
+            .map_err(|error| error.to_string())?;
 
         let zlibrary_config_path = config_dir.join("zlibrary.json");
         let mut zlibrary_config = load_zlibrary_config(&zlibrary_config_path).unwrap_or_default();
@@ -89,6 +93,7 @@ impl AppState {
             resolver,
             providers,
             resolver_policy_path,
+            state_store,
             zlibrary,
             zlibrary_probe,
             zlibrary_config: RwLock::new(zlibrary_config),
@@ -351,6 +356,43 @@ fn scan_library(
 }
 
 #[tauri::command]
+fn open_local_book(path: String) -> Result<ReaderBook, String> {
+    open_reader_book(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reading_progress(
+    state: State<'_, AppState>,
+    library_id: String,
+) -> Result<Option<ReadingProgress>, String> {
+    state
+        .state_store
+        .reading_progress(&library_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_reading_progress(
+    state: State<'_, AppState>,
+    library_id: String,
+    locator: Option<String>,
+    fraction: f64,
+) -> Result<ReadingProgress, String> {
+    let progress = ReadingProgress {
+        library_id,
+        locator,
+        fraction,
+        updated_at_unix_ms: now_unix_ms(),
+    }
+    .normalized();
+    state
+        .state_store
+        .set_reading_progress(progress.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(progress)
+}
+
+#[tauri::command]
 async fn download_book(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -595,6 +637,9 @@ pub fn run() {
             search_books,
             book_details,
             scan_library,
+            open_local_book,
+            reading_progress,
+            save_reading_progress,
             download_book
         ])
         .run(tauri::generate_context!())
