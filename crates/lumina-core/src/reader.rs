@@ -540,6 +540,9 @@ mod tests {
                 title: "第一章第二节".to_string(),
             },
         ]);
-        assert_eq!(titles.get("Text/ch1.xhtml").map(String::as_str), Some("第一章"));
+        assert_eq!(
+            titles.get("Text/ch1.xhtml").map(String::as_str),
+            Some("第一章")
+        );
     }
 }
