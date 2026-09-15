@@ -123,7 +123,13 @@ fn parse_rootfile_path(xml: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("EPUB container has no rootfile"))
 }
 
-fn parse_package(xml: &str) -> Result<(Option<String>, std::collections::HashMap<String, String>, Vec<String>)> {
+fn parse_package(
+    xml: &str,
+) -> Result<(
+    Option<String>,
+    std::collections::HashMap<String, String>,
+    Vec<String>,
+)> {
     let document = roxmltree::Document::parse(xml).context("parse EPUB package document")?;
     let title = document
         .descendants()
@@ -135,7 +141,12 @@ fn parse_package(xml: &str) -> Result<(Option<String>, std::collections::HashMap
     let manifest = document
         .descendants()
         .filter(|node| node.has_tag_name("item"))
-        .filter_map(|node| Some((node.attribute("id")?.to_string(), node.attribute("href")?.to_string())))
+        .filter_map(|node| {
+            Some((
+                node.attribute("id")?.to_string(),
+                node.attribute("href")?.to_string(),
+            ))
+        })
         .collect();
     let spine = document
         .descendants()
@@ -250,11 +261,17 @@ mod tests {
 
     #[test]
     fn fallback_markup_strip_keeps_text() {
-        assert_eq!(strip_markup_fallback("<p>Hello <b>world</b></p>"), "Hello world");
+        assert_eq!(
+            strip_markup_fallback("<p>Hello <b>world</b></p>"),
+            "Hello world"
+        );
     }
 
     #[test]
     fn zip_path_normalizes_parent_components() {
-        assert_eq!(normalize_zip_path(Path::new("OPS/../Text/ch1.xhtml")), "Text/ch1.xhtml");
+        assert_eq!(
+            normalize_zip_path(Path::new("OPS/../Text/ch1.xhtml")),
+            "Text/ch1.xhtml"
+        );
     }
 }
