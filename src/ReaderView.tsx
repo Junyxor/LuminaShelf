@@ -1,9 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 
 type ReaderChapter = {
   id: string;
   title: string;
   text: string;
+  path?: string;
 };
 
 type ReaderBook = {
@@ -61,12 +63,75 @@ export default function ReaderView({
 }: Props) {
   const [preferences, setPreferences] = useState<ReaderPreferences>(() => loadPreferences());
   const [tocOpen, setTocOpen] = useState(false);
+  const [chapterCache, setChapterCache] = useState<Record<string, ReaderChapter>>({});
+  const [chapterLoading, setChapterLoading] = useState(false);
+  const [chapterError, setChapterError] = useState<string | null>(null);
   const chapter = book.chapters[chapterIndex];
   const chapterCount = book.chapters.length;
+  const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
+  const chapterText = chapter?.text || loadedChapter?.text || "";
 
   useEffect(() => {
     localStorage.setItem("luminashelf.reader.preferences", JSON.stringify(preferences));
   }, [preferences]);
+
+  useEffect(() => {
+    if (!chapter) return;
+    if (chapter.text || chapterCache[chapter.id]) {
+      setChapterLoading(false);
+      setChapterError(null);
+      return;
+    }
+    if (!chapter.path) {
+      setChapterLoading(false);
+      setChapterError("章节正文路径缺失，无法按需加载。");
+      return;
+    }
+
+    let cancelled = false;
+    setChapterLoading(true);
+    setChapterError(null);
+    invoke<ReaderChapter>("open_local_book_chapter", {
+      path: chapter.path,
+      chapterId: chapter.id,
+    })
+      .then((loaded) => {
+        if (cancelled) return;
+        setChapterCache((current) => ({ ...current, [chapter.id]: loaded }));
+      })
+      .catch((reason) => {
+        if (!cancelled) setChapterError(String(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setChapterLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chapter?.id, chapter?.path, chapter?.text]);
+
+  useEffect(() => {
+    if (!chapterText) return;
+    const next = book.chapters[chapterIndex + 1];
+    if (!next || next.text || chapterCache[next.id] || !next.path) return;
+
+    let cancelled = false;
+    invoke<ReaderChapter>("open_local_book_chapter", {
+      path: next.path,
+      chapterId: next.id,
+    })
+      .then((loaded) => {
+        if (!cancelled) {
+          setChapterCache((current) => ({ ...current, [next.id]: loaded }));
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [book.chapters, chapterCache, chapterIndex, chapterText]);
 
   const chapterLabel = useMemo(
     () => `${chapter?.title ?? "未命名章节"} · ${chapterIndex + 1}/${chapterCount}`,
@@ -136,7 +201,11 @@ export default function ReaderView({
                 className="reader-text"
                 style={{ fontSize: `${preferences.fontSize}px`, lineHeight: preferences.lineHeight }}
               >
-                {chapter.text}
+                {chapterLoading
+                  ? "正在加载本章…"
+                  : chapterError
+                    ? `章节加载失败：${chapterError}`
+                    : chapterText || "本章没有可显示正文。"}
               </div>
             </article>
           </div>
