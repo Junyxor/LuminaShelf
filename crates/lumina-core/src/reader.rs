@@ -113,9 +113,7 @@ fn open_epub(path: &Path) -> Result<ReaderBook> {
         let chapter_title = toc_titles
             .get(&normalize_toc_href(&item.href))
             .cloned()
-            .or_else(|| {
-                extract_html_title(&html).filter(|value| !value.trim().is_empty())
-            })
+            .or_else(|| extract_html_title(&html).filter(|value| !value.trim().is_empty()))
             .unwrap_or_else(|| format!("第 {} 章", index + 1));
         chapters.push(ReaderChapter {
             id: idref.clone(),
@@ -156,9 +154,10 @@ fn load_toc_titles<R: Read + Seek>(
         .as_ref()
         .and_then(|id| package.manifest.get(id))
         .or_else(|| {
-            package.manifest.values().find(|item| {
-                item.media_type.as_deref() == Some("application/x-dtbncx+xml")
-            })
+            package
+                .manifest
+                .values()
+                .find(|item| item.media_type.as_deref() == Some("application/x-dtbncx+xml"))
         });
     if let Some(ncx_item) = ncx_item {
         let entry = normalize_zip_path(&package_dir.join(&ncx_item.href));
@@ -170,11 +169,13 @@ fn load_toc_titles<R: Read + Seek>(
 }
 
 fn toc_map(entries: Vec<TocEntry>) -> HashMap<String, String> {
-    entries
-        .into_iter()
-        .filter(|entry| !entry.title.is_empty())
-        .map(|entry| (normalize_toc_href(&entry.href), entry.title))
-        .collect()
+    let mut titles = HashMap::new();
+    for entry in entries.into_iter().filter(|entry| !entry.title.is_empty()) {
+        titles
+            .entry(normalize_toc_href(&entry.href))
+            .or_insert(entry.title);
+    }
+    titles
 }
 
 fn parse_epub3_nav(xml: &str) -> Vec<TocEntry> {
@@ -186,7 +187,10 @@ fn parse_epub3_nav(xml: &str) -> Vec<TocEntry> {
             && node.tag_name().name().eq_ignore_ascii_case("nav")
             && node.attributes().any(|attribute| {
                 attribute.name().eq_ignore_ascii_case("type")
-                    && attribute.value().split_whitespace().any(|value| value == "toc")
+                    && attribute
+                        .value()
+                        .split_whitespace()
+                        .any(|value| value == "toc")
             })
     });
     let Some(toc_nav) = toc_nav else {
@@ -522,5 +526,20 @@ mod tests {
             normalize_toc_href("Text/%E7%AC%AC%E4%B8%80%E7%AB%A0.xhtml#top"),
             "Text/第一章.xhtml"
         );
+    }
+
+    #[test]
+    fn keeps_first_title_for_multiple_anchors_in_one_chapter() {
+        let titles = toc_map(vec![
+            TocEntry {
+                href: "Text/ch1.xhtml#start".to_string(),
+                title: "第一章".to_string(),
+            },
+            TocEntry {
+                href: "Text/ch1.xhtml#section-2".to_string(),
+                title: "第一章第二节".to_string(),
+            },
+        ]);
+        assert_eq!(titles.get("Text/ch1.xhtml").map(String::as_str), Some("第一章"));
     }
 }
