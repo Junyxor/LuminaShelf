@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Seek},
     path::{Path, PathBuf},
@@ -9,6 +10,9 @@ use zip::ZipArchive;
 
 const MAX_CHAPTER_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TXT_BYTES: u64 = 8 * 1024 * 1024;
+
+type PackageManifest = HashMap<String, String>;
+type PackageData = (Option<String>, PackageManifest, Vec<String>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,13 +127,7 @@ fn parse_rootfile_path(xml: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("EPUB container has no rootfile"))
 }
 
-fn parse_package(
-    xml: &str,
-) -> Result<(
-    Option<String>,
-    std::collections::HashMap<String, String>,
-    Vec<String>,
-)> {
+fn parse_package(xml: &str) -> Result<PackageData> {
     let document = roxmltree::Document::parse(xml).context("parse EPUB package document")?;
     let title = document
         .descendants()
