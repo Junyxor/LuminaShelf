@@ -23,6 +23,9 @@ pub use provider::{
     SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile,
     ZLibraryProvider, ZLibrarySession,
 };
-pub use reader::{open_book, ReaderBook, ReaderChapter};
+pub use reader::{
+    open_book, open_book_chapter, open_book_metadata, ReaderBook, ReaderBookMetadata,
+    ReaderChapter, ReaderChapterMetadata,
+};
 pub use storage::StateStore;
 pub use user_state::{AccountProfile, FavoriteBook, ReadingProgress};
