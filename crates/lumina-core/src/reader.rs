@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use encoding_rs::GBK;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -169,9 +170,36 @@ fn normalize_zip_path(path: &Path) -> String {
 }
 
 fn decode_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
+    let decoded = if let Some(stripped) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        String::from_utf8_lossy(stripped).into_owned()
+    } else if let Some(stripped) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        decode_utf16(stripped, true)
+    } else if let Some(stripped) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        decode_utf16(stripped, false)
+    } else if let Ok(text) = std::str::from_utf8(bytes) {
+        text.to_string()
+    } else {
+        let (text, _, _) = GBK.decode(bytes);
+        text.into_owned()
+    };
+    normalize_newlines(decoded)
+}
+
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
+    let units = bytes.chunks_exact(2).map(|pair| {
+        if little_endian {
+            u16::from_le_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_be_bytes([pair[0], pair[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+fn normalize_newlines(value: String) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn file_title(path: &Path) -> String {
@@ -271,5 +299,17 @@ mod tests {
             normalize_zip_path(Path::new("OPS/../Text/ch1.xhtml")),
             "Text/ch1.xhtml"
         );
+    }
+
+    #[test]
+    fn decodes_utf16le_bom_text() {
+        let bytes = [0xff, 0xfe, b'Z', 0, b'\n', 0];
+        assert_eq!(decode_text(&bytes), "Z\n");
+    }
+
+    #[test]
+    fn decodes_gbk_text() {
+        let (bytes, _, _) = GBK.encode("中文测试");
+        assert_eq!(decode_text(&bytes), "中文测试");
     }
 }
