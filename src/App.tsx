@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
+import ReaderView from "./ReaderView";
 import ZLibraryAccount, { type ZLibraryAccountStatus } from "./ZLibraryAccount";
 
 type CoreStatus = {
@@ -256,7 +257,6 @@ export default function App() {
     [downloads],
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
-  const readerChapter = readerBook?.chapters[readerChapterIndex] ?? null;
   const readerFraction = readerBook?.chapters.length
     ? (readerChapterIndex + 1) / readerBook.chapters.length
     : 0;
@@ -736,33 +736,16 @@ export default function App() {
         </div>
       ) : null}
 
-      {readerItem && readerBook && readerChapter ? (
-        <div className="reader-backdrop" onClick={closeReader}>
-          <section className="reader-shell" onClick={(event) => event.stopPropagation()}>
-            <header className="reader-toolbar">
-              <button className="ghost-button" onClick={closeReader}>← 返回书库</button>
-              <div className="reader-title">
-                <strong>{readerBook.title || readerItem.title}</strong>
-                <small>{readerChapter.title} · {readerChapterIndex + 1}/{readerBook.chapters.length}</small>
-              </div>
-              <span className="format-badge">{readerItem.format.toUpperCase()}</span>
-            </header>
-            <div className="reader-body">
-              <article>
-                <h2>{readerChapter.title}</h2>
-                <div className="reader-text">{readerChapter.text}</div>
-              </article>
-            </div>
-            <footer className="reader-footer">
-              <small>{Math.round(readerFraction * 100)}% · 进度自动保存到本地 SQLite</small>
-              <div className="reader-progress-track"><i style={{ width: `${readerFraction * 100}%` }} /></div>
-              <div className="reader-nav-actions">
-                <button className="ghost-button" disabled={readerChapterIndex === 0} onClick={() => changeReaderChapter(readerChapterIndex - 1)}>上一章</button>
-                <button className="primary-button" disabled={readerChapterIndex >= readerBook.chapters.length - 1} onClick={() => changeReaderChapter(readerChapterIndex + 1)}>下一章</button>
-              </div>
-            </footer>
-          </section>
-        </div>
+      {readerItem && readerBook ? (
+        <ReaderView
+          book={readerBook}
+          fallbackTitle={readerItem.title}
+          format={readerItem.format}
+          chapterIndex={readerChapterIndex}
+          progressFraction={readerFraction}
+          onChapterChange={changeReaderChapter}
+          onClose={closeReader}
+        />
       ) : null}
     </div>
   );

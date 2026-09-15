@@ -22,14 +22,36 @@
 }
 
 .reader-shell {
-  width: min(1080px, 100%);
-  height: min(860px, calc(100vh - 36px));
+  --reader-bg: rgba(246, 248, 252, 0.98);
+  --reader-panel: rgba(255, 255, 255, 0.78);
+  --reader-text: #202636;
+  --reader-muted: #6c7487;
+  --reader-border: rgba(31, 43, 72, 0.09);
+  width: min(1120px, 100%);
+  height: min(880px, calc(100vh - 36px));
   border-radius: 28px;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  background: rgba(246, 248, 252, 0.96);
+  background: var(--reader-bg);
+  color: var(--reader-text);
   box-shadow: 0 24px 80px rgba(12, 18, 36, 0.22);
+}
+
+.reader-theme-sepia {
+  --reader-bg: #f5eddd;
+  --reader-panel: rgba(250, 243, 227, 0.92);
+  --reader-text: #3f3426;
+  --reader-muted: #81715d;
+  --reader-border: rgba(92, 72, 45, 0.14);
+}
+
+.reader-theme-dark {
+  --reader-bg: #171a20;
+  --reader-panel: rgba(28, 32, 40, 0.96);
+  --reader-text: #e9edf5;
+  --reader-muted: #9ca7b8;
+  --reader-border: rgba(235, 240, 250, 0.1);
 }
 
 .reader-toolbar,
@@ -39,19 +61,21 @@
   justify-content: space-between;
   gap: 14px;
   padding: 14px 18px;
-  border-color: rgba(31, 43, 72, 0.09);
+  background: var(--reader-panel);
+  border-color: var(--reader-border);
 }
 
 .reader-toolbar {
-  border-bottom: 1px solid rgba(31, 43, 72, 0.09);
+  border-bottom: 1px solid var(--reader-border);
 }
 
 .reader-footer {
-  border-top: 1px solid rgba(31, 43, 72, 0.09);
+  border-top: 1px solid var(--reader-border);
 }
 
 .reader-title {
   min-width: 0;
+  flex: 1;
 }
 
 .reader-title strong,
@@ -64,11 +88,90 @@
 
 .reader-title small,
 .reader-footer small {
-  color: #6c7487;
+  color: var(--reader-muted);
   margin-top: 3px;
 }
 
+.reader-toolbar-actions,
+.reader-controls,
+.reader-control-group,
+.reader-theme-picker,
+.reader-position {
+  display: flex;
+  align-items: center;
+}
+
+.reader-toolbar-actions,
+.reader-controls,
+.reader-theme-picker {
+  gap: 8px;
+}
+
+.reader-layout {
+  min-height: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+}
+
+.reader-toc {
+  width: min(320px, 36vw);
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--reader-panel);
+  border-right: 1px solid var(--reader-border);
+}
+
+.reader-toc-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--reader-border);
+}
+
+.reader-toc-heading button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.reader-toc-list {
+  overflow: auto;
+  padding: 8px;
+}
+
+.reader-toc-list button {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  align-items: start;
+  gap: 8px;
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reader-toc-list button:hover,
+.reader-toc-list button.active {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.reader-toc-list span {
+  color: var(--reader-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .reader-body {
+  min-width: 0;
   overflow: auto;
   padding: clamp(22px, 4vw, 54px) clamp(20px, 8vw, 96px);
 }
@@ -87,10 +190,20 @@
 .reader-text {
   white-space: pre-wrap;
   font-family: ui-serif, "Noto Serif SC", "Songti SC", Georgia, serif;
-  font-size: clamp(17px, 2.1vw, 20px);
-  line-height: 1.95;
   letter-spacing: 0.01em;
-  color: #202636;
+  color: var(--reader-text);
+}
+
+.reader-footer-expanded {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+}
+
+.reader-position {
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .reader-nav-actions {
@@ -99,11 +212,11 @@
 }
 
 .reader-progress-track {
-  flex: 1;
-  max-width: 260px;
+  width: 100%;
+  max-width: 280px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(31, 43, 72, 0.1);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   overflow: hidden;
 }
 
@@ -112,6 +225,84 @@
   height: 100%;
   border-radius: inherit;
   background: currentColor;
+}
+
+.reader-control-group {
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid var(--reader-border);
+  border-radius: 12px;
+}
+
+.reader-control-group > span {
+  color: var(--reader-muted);
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.reader-control-group button {
+  min-width: 32px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+
+.reader-control-group button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.reader-control-group strong {
+  min-width: 30px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.reader-theme-picker button {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.reader-theme-picker button.light {
+  background: #f7f8fb;
+}
+
+.reader-theme-picker button.sepia {
+  background: #e9d9ba;
+}
+
+.reader-theme-picker button.dark {
+  background: #20242c;
+}
+
+.reader-theme-picker button.active {
+  border-color: #5d7cff;
+}
+
+.reader-theme-dark .ghost-button,
+.reader-theme-dark .primary-button,
+.reader-theme-dark .format-badge {
+  color: inherit;
+}
+
+@media (max-width: 860px) {
+  .reader-footer-expanded {
+    grid-template-columns: 1fr auto;
+  }
+
+  .reader-controls {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 720px) {
@@ -130,17 +321,54 @@
     padding: 12px 14px;
   }
 
+  .reader-title small {
+    max-width: 44vw;
+  }
+
+  .reader-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-toc {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 2;
+    width: min(86vw, 340px);
+    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.18);
+  }
+
   .reader-body {
     padding: 24px 20px 40px;
   }
 
-  .reader-footer {
-    flex-wrap: wrap;
+  .reader-footer-expanded {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-position,
+  .reader-nav-actions,
+  .reader-controls {
+    grid-column: 1;
+  }
+
+  .reader-position {
+    grid-row: 1;
+  }
+
+  .reader-controls {
+    grid-row: 2;
+  }
+
+  .reader-nav-actions {
+    grid-row: 3;
+    justify-content: stretch;
+  }
+
+  .reader-nav-actions button {
+    flex: 1;
   }
 
   .reader-progress-track {
-    order: 3;
     max-width: none;
-    width: 100%;
   }
 }
