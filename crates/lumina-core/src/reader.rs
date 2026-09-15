@@ -50,20 +50,75 @@ pub struct ReaderChapter {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaderBookMetadata {
+    pub title: String,
+    pub chapters: Vec<ReaderChapterMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaderChapterMetadata {
+    pub id: String,
+    pub title: String,
+}
+
 pub fn open_book(path: impl AsRef<Path>) -> Result<ReaderBook> {
-    let path = std::fs::canonicalize(path.as_ref())
-        .with_context(|| format!("open reader file {}", path.as_ref().display()))?;
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    let path = canonical_reader_path(path)?;
+    match reader_extension(&path).as_str() {
         "txt" => open_txt(&path),
         "epub" => open_epub(&path),
         other => Err(anyhow!("reader does not support {other} yet")),
     }
+}
+
+pub fn open_book_metadata(path: impl AsRef<Path>) -> Result<ReaderBookMetadata> {
+    let path = canonical_reader_path(path)?;
+    match reader_extension(&path).as_str() {
+        "txt" => {
+            let title = file_title(&path);
+            Ok(ReaderBookMetadata {
+                title: title.clone(),
+                chapters: vec![ReaderChapterMetadata {
+                    id: "text".to_string(),
+                    title,
+                }],
+            })
+        }
+        "epub" => open_epub_metadata(&path),
+        other => Err(anyhow!("reader does not support {other} yet")),
+    }
+}
+
+pub fn open_book_chapter(path: impl AsRef<Path>, chapter_id: &str) -> Result<ReaderChapter> {
+    let path = canonical_reader_path(path)?;
+    match reader_extension(&path).as_str() {
+        "txt" => {
+            if chapter_id != "text" {
+                return Err(anyhow!("text reader only exposes the text chapter"));
+            }
+            open_txt(&path)?
+                .chapters
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("text file has no readable chapter"))
+        }
+        "epub" => open_epub_chapter(&path, chapter_id),
+        other => Err(anyhow!("reader does not support {other} yet")),
+    }
+}
+
+fn canonical_reader_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    std::fs::canonicalize(path.as_ref())
+        .with_context(|| format!("open reader file {}", path.as_ref().display()))
+}
+
+fn reader_extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn open_txt(path: &Path) -> Result<ReaderBook> {
@@ -84,16 +139,7 @@ fn open_txt(path: &Path) -> Result<ReaderBook> {
 }
 
 fn open_epub(path: &Path) -> Result<ReaderBook> {
-    let file = File::open(path)?;
-    let mut archive = ZipArchive::new(file).context("open EPUB archive")?;
-    let container = read_zip_text(&mut archive, "META-INF/container.xml")?;
-    let rootfile = parse_rootfile_path(&container)?;
-    let package = read_zip_text(&mut archive, &rootfile)?;
-    let package_dir = PathBuf::from(&rootfile)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let package_data = parse_package(&package)?;
+    let (mut archive, package_dir, package_data) = load_epub_package(path)?;
     let toc_titles = load_toc_titles(&mut archive, &package_dir, &package_data);
     let mut chapters = Vec::new();
 
@@ -128,6 +174,84 @@ fn open_epub(path: &Path) -> Result<ReaderBook> {
         title: package_data.title.unwrap_or_else(|| file_title(path)),
         chapters,
     })
+}
+
+fn open_epub_metadata(path: &Path) -> Result<ReaderBookMetadata> {
+    let (mut archive, package_dir, package_data) = load_epub_package(path)?;
+    let toc_titles = load_toc_titles(&mut archive, &package_dir, &package_data);
+    let chapters = epub_chapter_metadata(&package_data, &toc_titles);
+    if chapters.is_empty() {
+        return Err(anyhow!("EPUB does not contain readable spine chapters"));
+    }
+    Ok(ReaderBookMetadata {
+        title: package_data.title.unwrap_or_else(|| file_title(path)),
+        chapters,
+    })
+}
+
+fn open_epub_chapter(path: &Path, chapter_id: &str) -> Result<ReaderChapter> {
+    let (mut archive, package_dir, package_data) = load_epub_package(path)?;
+    let index = package_data
+        .spine
+        .iter()
+        .position(|idref| idref == chapter_id)
+        .ok_or_else(|| anyhow!("EPUB chapter is not in the spine"))?;
+    let item = package_data
+        .manifest
+        .get(chapter_id)
+        .ok_or_else(|| anyhow!("EPUB chapter is missing from the manifest"))?;
+    let entry = normalize_zip_path(&package_dir.join(&item.href));
+    let html = read_zip_text(&mut archive, &entry)?;
+    let text = html_to_text(&html);
+    if text.trim().is_empty() {
+        return Err(anyhow!("EPUB chapter does not contain readable text"));
+    }
+    let toc_titles = load_toc_titles(&mut archive, &package_dir, &package_data);
+    let title = toc_titles
+        .get(&normalize_toc_href(&item.href))
+        .cloned()
+        .or_else(|| extract_html_title(&html).filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(|| format!("第 {} 章", index + 1));
+    Ok(ReaderChapter {
+        id: chapter_id.to_string(),
+        title,
+        text,
+    })
+}
+
+fn load_epub_package(path: &Path) -> Result<(ZipArchive<File>, PathBuf, PackageData)> {
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file).context("open EPUB archive")?;
+    let container = read_zip_text(&mut archive, "META-INF/container.xml")?;
+    let rootfile = parse_rootfile_path(&container)?;
+    let package = read_zip_text(&mut archive, &rootfile)?;
+    let package_dir = PathBuf::from(&rootfile)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let package_data = parse_package(&package)?;
+    Ok((archive, package_dir, package_data))
+}
+
+fn epub_chapter_metadata(
+    package: &PackageData,
+    toc_titles: &HashMap<String, String>,
+) -> Vec<ReaderChapterMetadata> {
+    package
+        .spine
+        .iter()
+        .enumerate()
+        .filter_map(|(index, idref)| {
+            let item = package.manifest.get(idref)?;
+            Some(ReaderChapterMetadata {
+                id: idref.clone(),
+                title: toc_titles
+                    .get(&normalize_toc_href(&item.href))
+                    .cloned()
+                    .unwrap_or_else(|| format!("第 {} 章", index + 1)),
+            })
+        })
+        .collect()
 }
 
 fn load_toc_titles<R: Read + Seek>(
@@ -545,5 +669,37 @@ mod tests {
             titles.get("Text/ch1.xhtml").map(String::as_str),
             Some("第一章")
         );
+    }
+
+    #[test]
+    fn metadata_uses_toc_titles_without_loading_chapter_html() {
+        let package = PackageData {
+            title: Some("Book".to_string()),
+            manifest: HashMap::from([
+                (
+                    "ch1".to_string(),
+                    ManifestItem {
+                        href: "Text/ch1.xhtml".to_string(),
+                        media_type: Some("application/xhtml+xml".to_string()),
+                        properties: None,
+                    },
+                ),
+                (
+                    "ch2".to_string(),
+                    ManifestItem {
+                        href: "Text/ch2.xhtml".to_string(),
+                        media_type: Some("application/xhtml+xml".to_string()),
+                        properties: None,
+                    },
+                ),
+            ]),
+            spine: vec!["ch1".to_string(), "ch2".to_string()],
+            toc_id: None,
+        };
+        let toc = HashMap::from([("Text/ch1.xhtml".to_string(), "第一章".to_string())]);
+        let chapters = epub_chapter_metadata(&package, &toc);
+        assert_eq!(chapters.len(), 2);
+        assert_eq!(chapters[0].title, "第一章");
+        assert_eq!(chapters[1].title, "第 2 章");
     }
 }
