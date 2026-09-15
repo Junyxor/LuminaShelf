@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { GlobalWorkerOptions, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
+import {
+  GlobalWorkerOptions,
+  getDocument,
+  type PDFDocumentLoadingTask,
+  type PDFDocumentProxy,
+} from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { useEffect, useRef, useState } from "react";
 import "./pdf.css";
@@ -36,7 +41,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    let loadedDocument: PDFDocumentProxy | null = null;
+    let loadingTask: PDFDocumentLoadingTask | null = null;
 
     async function load() {
       setLoading(true);
@@ -47,12 +52,9 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
           invoke<ReadingProgress | null>("reading_progress", { libraryId }),
         ]);
         if (cancelled) return;
-        const task = getDocument({ data: new Uint8Array(buffer) });
-        loadedDocument = await task.promise;
-        if (cancelled) {
-          await loadedDocument.destroy();
-          return;
-        }
+        loadingTask = getDocument({ data: new Uint8Array(buffer) });
+        const loadedDocument = await loadingTask.promise;
+        if (cancelled) return;
         const savedPage = progress?.locator?.startsWith("page:")
           ? Number(progress.locator.slice(5))
           : Math.ceil((progress?.fraction ?? 0) * loadedDocument.numPages);
@@ -68,7 +70,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
     void load();
     return () => {
       cancelled = true;
-      if (loadedDocument) void loadedDocument.destroy();
+      if (loadingTask) void loadingTask.destroy();
     };
   }, [libraryId, path]);
 
