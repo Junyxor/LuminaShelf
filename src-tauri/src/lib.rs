@@ -1,3 +1,5 @@
+mod pdf;
+
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::{now_unix_ms, scan_folder},
@@ -659,7 +661,8 @@ pub fn run() {
             open_local_book,
             reading_progress,
             save_reading_progress,
-            download_book
+            download_book,
+            pdf::read_pdf_bytes
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LuminaShelf");
