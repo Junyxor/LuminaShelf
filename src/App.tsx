@@ -58,6 +58,24 @@ type LibraryItem = {
   sourceBookId?: string | null;
 };
 
+type ReaderChapter = {
+  id: string;
+  title: string;
+  text: string;
+};
+
+type ReaderBook = {
+  title: string;
+  chapters: ReaderChapter[];
+};
+
+type ReadingProgress = {
+  libraryId: string;
+  locator?: string | null;
+  fraction: number;
+  updatedAtUnixMs: number;
+};
+
 type DownloadProgressEvent = {
   providerId: string;
   bookId: string;
@@ -168,6 +186,10 @@ export default function App() {
   const [downloads, setDownloads] = useState<Record<string, DownloadTask>>({});
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [readerItem, setReaderItem] = useState<LibraryItem | null>(null);
+  const [readerBook, setReaderBook] = useState<ReaderBook | null>(null);
+  const [readerChapterIndex, setReaderChapterIndex] = useState(0);
+  const [readerLoading, setReaderLoading] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("luminashelf.settings", JSON.stringify(settings));
@@ -232,6 +254,10 @@ export default function App() {
     [downloads],
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
+  const readerChapter = readerBook?.chapters[readerChapterIndex] ?? null;
+  const readerFraction = readerBook?.chapters.length
+    ? (readerChapterIndex + 1) / readerBook.chapters.length
+    : 0;
 
   function changeProvider(providerId: string) {
     setSelectedProvider(providerId);
@@ -370,6 +396,67 @@ export default function App() {
     } finally {
       setLibraryLoading(false);
     }
+  }
+
+  async function openLibraryItem(item: LibraryItem) {
+    if (item.format !== "epub" && item.format !== "txt") {
+      setError(`内置阅读器暂时只支持 EPUB / TXT，${item.format.toUpperCase()} 会在后续接入。`);
+      return;
+    }
+    setReaderLoading(true);
+    setError(null);
+    try {
+      const [book, progress] = await Promise.all([
+        invoke<ReaderBook>("open_local_book", { path: item.path }),
+        invoke<ReadingProgress | null>("reading_progress", { libraryId: item.id }),
+      ]);
+      let chapterIndex = 0;
+      if (progress?.locator) {
+        const located = book.chapters.findIndex((chapter) => chapter.id === progress.locator);
+        if (located >= 0) chapterIndex = located;
+      } else if (progress && book.chapters.length > 1) {
+        chapterIndex = Math.min(
+          book.chapters.length - 1,
+          Math.max(0, Math.floor(progress.fraction * book.chapters.length)),
+        );
+      }
+      setReaderItem(item);
+      setReaderBook(book);
+      setReaderChapterIndex(chapterIndex);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setReaderLoading(false);
+    }
+  }
+
+  async function persistReaderPosition(index = readerChapterIndex) {
+    if (!readerItem || !readerBook?.chapters.length) return;
+    const chapter = readerBook.chapters[index];
+    if (!chapter) return;
+    try {
+      await invoke<ReadingProgress>("save_reading_progress", {
+        libraryId: readerItem.id,
+        locator: chapter.id,
+        fraction: (index + 1) / readerBook.chapters.length,
+      });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  function changeReaderChapter(nextIndex: number) {
+    if (!readerBook) return;
+    const bounded = Math.min(readerBook.chapters.length - 1, Math.max(0, nextIndex));
+    setReaderChapterIndex(bounded);
+    void persistReaderPosition(bounded);
+  }
+
+  function closeReader() {
+    void persistReaderPosition();
+    setReaderItem(null);
+    setReaderBook(null);
+    setReaderChapterIndex(0);
   }
 
   function resetSettings() {
@@ -518,16 +605,28 @@ export default function App() {
             <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
             <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
           </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 支持 EPUB / PDF / MOBI / AZW3 / TXT / CBZ / DJVU</div>
+          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 内置阅读器首批支持 EPUB / TXT</div>
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
-            {libraryItems.map((item) => (
-              <article className="library-card glass" key={`${item.id}:${item.path}`}>
-                <div className="library-icon">{item.format.toUpperCase()}</div>
-                <div><h4>{item.title}</h4><p>{item.authors.join(" · ") || "本地文件"}</p><small>{formatBytes(item.sizeBytes)} · {item.path}</small></div>
-              </article>
-            ))}
+            {libraryItems.map((item) => {
+              const readable = item.format === "epub" || item.format === "txt";
+              return (
+                <article className="library-card glass" key={`${item.id}:${item.path}`}>
+                  <div className="library-icon">{item.format.toUpperCase()}</div>
+                  <div className="library-card-copy">
+                    <h4>{item.title}</h4>
+                    <p>{item.authors.join(" · ") || "本地文件"}</p>
+                    <small>{formatBytes(item.sizeBytes)} · {item.path}</small>
+                    <div className="library-card-actions">
+                      <button className="primary-button small" disabled={!readable || readerLoading} onClick={() => void openLibraryItem(item)}>
+                        {readerLoading ? "打开中…" : readable ? "阅读 / 继续阅读" : "暂不支持阅读"}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
           </section>
         ) : (
           <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书，完成后会自动进入本轮书架。</p></section>
@@ -632,6 +731,35 @@ export default function App() {
             <div className="detail-description">{detailsLoading ? "正在从 Core 获取详情…" : bookDetails?.description || "当前 Provider 没有提供简介。"}</div>
             <button className="primary-button wide" disabled={!preferredFormat(selectedBook)} onClick={() => void startDownload(selectedBook)}>下载到 LuminaShelf</button>
           </aside>
+        </div>
+      ) : null}
+
+      {readerItem && readerBook && readerChapter ? (
+        <div className="reader-backdrop" onClick={closeReader}>
+          <section className="reader-shell" onClick={(event) => event.stopPropagation()}>
+            <header className="reader-toolbar">
+              <button className="ghost-button" onClick={closeReader}>← 返回书库</button>
+              <div className="reader-title">
+                <strong>{readerBook.title || readerItem.title}</strong>
+                <small>{readerChapter.title} · {readerChapterIndex + 1}/{readerBook.chapters.length}</small>
+              </div>
+              <span className="format-badge">{readerItem.format.toUpperCase()}</span>
+            </header>
+            <div className="reader-body">
+              <article>
+                <h2>{readerChapter.title}</h2>
+                <div className="reader-text">{readerChapter.text}</div>
+              </article>
+            </div>
+            <footer className="reader-footer">
+              <small>{Math.round(readerFraction * 100)}% · 进度自动保存到本地 SQLite</small>
+              <div className="reader-progress-track"><i style={{ width: `${readerFraction * 100}%` }} /></div>
+              <div className="reader-nav-actions">
+                <button className="ghost-button" disabled={readerChapterIndex === 0} onClick={() => changeReaderChapter(readerChapterIndex - 1)}>上一章</button>
+                <button className="primary-button" disabled={readerChapterIndex >= readerBook.chapters.length - 1} onClick={() => changeReaderChapter(readerChapterIndex + 1)}>下一章</button>
+              </div>
+            </footer>
+          </section>
         </div>
       ) : null}
     </div>

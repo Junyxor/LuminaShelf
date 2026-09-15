@@ -1,0 +1,146 @@
+.library-card-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.library-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.reader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(8, 12, 24, 0.58);
+  backdrop-filter: blur(10px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.reader-shell {
+  width: min(1080px, 100%);
+  height: min(860px, calc(100vh - 36px));
+  border-radius: 28px;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: rgba(246, 248, 252, 0.96);
+  box-shadow: 0 24px 80px rgba(12, 18, 36, 0.22);
+}
+
+.reader-toolbar,
+.reader-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  border-color: rgba(31, 43, 72, 0.09);
+}
+
+.reader-toolbar {
+  border-bottom: 1px solid rgba(31, 43, 72, 0.09);
+}
+
+.reader-footer {
+  border-top: 1px solid rgba(31, 43, 72, 0.09);
+}
+
+.reader-title {
+  min-width: 0;
+}
+
+.reader-title strong,
+.reader-title small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-title small,
+.reader-footer small {
+  color: #6c7487;
+  margin-top: 3px;
+}
+
+.reader-body {
+  overflow: auto;
+  padding: clamp(22px, 4vw, 54px) clamp(20px, 8vw, 96px);
+}
+
+.reader-body article {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.reader-body h2 {
+  margin: 0 0 28px;
+  font-size: clamp(24px, 4vw, 38px);
+  line-height: 1.25;
+}
+
+.reader-text {
+  white-space: pre-wrap;
+  font-family: ui-serif, "Noto Serif SC", "Songti SC", Georgia, serif;
+  font-size: clamp(17px, 2.1vw, 20px);
+  line-height: 1.95;
+  letter-spacing: 0.01em;
+  color: #202636;
+}
+
+.reader-nav-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.reader-progress-track {
+  flex: 1;
+  max-width: 260px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(31, 43, 72, 0.1);
+  overflow: hidden;
+}
+
+.reader-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+}
+
+@media (max-width: 720px) {
+  .reader-backdrop {
+    padding: 0;
+  }
+
+  .reader-shell {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .reader-toolbar,
+  .reader-footer {
+    padding: 12px 14px;
+  }
+
+  .reader-body {
+    padding: 24px 20px 40px;
+  }
+
+  .reader-footer {
+    flex-wrap: wrap;
+  }
+
+  .reader-progress-track {
+    order: 3;
+    max-width: none;
+    width: 100%;
+  }
+}

@@ -1,6 +1,6 @@
 //! LuminaShelf high-performance core.
 //!
-//! Network, provider, download and persistent user state live here so UI
+//! Network, provider, download, reading and persistent user state live here so UI
 //! shells remain thin and replaceable.
 
 pub mod download;
@@ -8,6 +8,7 @@ pub mod library;
 pub mod mirror;
 pub mod network;
 pub mod provider;
+pub mod reader;
 pub mod storage;
 pub mod user_state;
 
@@ -22,5 +23,6 @@ pub use provider::{
     SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile,
     ZLibraryProvider, ZLibrarySession,
 };
+pub use reader::{open_book, ReaderBook, ReaderChapter};
 pub use storage::StateStore;
 pub use user_state::{AccountProfile, FavoriteBook, ReadingProgress};

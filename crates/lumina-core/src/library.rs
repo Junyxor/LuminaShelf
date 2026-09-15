@@ -102,9 +102,11 @@ impl LibraryItem {
             .filter(|value| !value.is_empty())
             .unwrap_or(&guessed_title)
             .to_string();
+        let stable_key = path.to_string_lossy().replace('\\', "/");
+        let id = Uuid::new_v5(&Uuid::NAMESPACE_URL, stable_key.as_bytes()).to_string();
 
         Ok(Self {
-            id: Uuid::new_v4().to_string(),
+            id,
             title,
             authors,
             format: LibraryFormat::from_path(&path),
@@ -192,4 +194,19 @@ fn system_time_ms(time: SystemTime) -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_id_is_path_based() {
+        let path = std::env::temp_dir().join(format!("lumina-library-{}.txt", Uuid::new_v4()));
+        std::fs::write(&path, "hello").unwrap();
+        let first = LibraryItem::inspect(&path, None, None, None).unwrap();
+        let second = LibraryItem::inspect(&path, None, None, None).unwrap();
+        assert_eq!(first.id, second.id);
+        let _ = std::fs::remove_file(path);
+    }
 }
