@@ -135,8 +135,8 @@ pub fn scan_folder(
     let mut pending = vec![root];
     let mut files = Vec::new();
     while let Some(folder) = pending.pop() {
-        for entry in fs::read_dir(&folder)
-            .with_context(|| format!("read folder {}", folder.display()))?
+        for entry in
+            fs::read_dir(&folder).with_context(|| format!("read folder {}", folder.display()))?
         {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -171,7 +171,10 @@ fn infer_title_and_authors(stem: &str) -> (String, Vec<String>) {
             return (title.to_string(), vec![author.to_string()]);
         }
     }
-    (stem.replace(['_', '.'], " ").trim().to_string(), Vec::new())
+    (
+        stem.replace(['_', '.'], " ").trim().to_string(),
+        Vec::new(),
+    )
 }
 
 fn expand_home(path: &Path) -> PathBuf {
