@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
+import PdfReader from "./PdfReader";
 import ReaderView from "./ReaderView";
 import ZLibraryAccount, { type ZLibraryAccountStatus } from "./ZLibraryAccount";
 
@@ -191,6 +192,7 @@ export default function App() {
   const [readerBook, setReaderBook] = useState<ReaderBook | null>(null);
   const [readerChapterIndex, setReaderChapterIndex] = useState(0);
   const [readerLoading, setReaderLoading] = useState(false);
+  const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
 
   useEffect(() => {
     localStorage.setItem("luminashelf.settings", JSON.stringify(settings));
@@ -401,8 +403,13 @@ export default function App() {
   }
 
   async function openLibraryItem(item: LibraryItem) {
+    if (item.format === "pdf") {
+      setError(null);
+      setPdfItem(item);
+      return;
+    }
     if (item.format !== "epub" && item.format !== "txt") {
-      setError(`内置阅读器暂时只支持 EPUB / TXT，${item.format.toUpperCase()} 会在后续接入。`);
+      setError(`内置阅读器暂时支持 EPUB / TXT / PDF，${item.format.toUpperCase()} 会在后续接入。`);
       return;
     }
     setReaderLoading(true);
@@ -607,12 +614,12 @@ export default function App() {
             <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
             <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
           </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 内置阅读器首批支持 EPUB / TXT</div>
+          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 内置阅读器支持 EPUB / TXT / PDF</div>
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
             {libraryItems.map((item) => {
-              const readable = item.format === "epub" || item.format === "txt";
+              const readable = item.format === "epub" || item.format === "txt" || item.format === "pdf";
               return (
                 <article className="library-card glass" key={`${item.id}:${item.path}`}>
                   <div className="library-icon">{item.format.toUpperCase()}</div>
@@ -745,6 +752,15 @@ export default function App() {
           progressFraction={readerFraction}
           onChapterChange={changeReaderChapter}
           onClose={closeReader}
+        />
+      ) : null}
+
+      {pdfItem ? (
+        <PdfReader
+          libraryId={pdfItem.id}
+          path={pdfItem.path}
+          title={pdfItem.title}
+          onClose={() => setPdfItem(null)}
         />
       ) : null}
     </div>
