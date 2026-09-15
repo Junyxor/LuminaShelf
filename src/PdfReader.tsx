@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { GlobalWorkerOptions, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { useEffect, useRef, useState } from "react";
+import "./pdf.css";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -17,6 +18,11 @@ type Props = {
   path: string;
   title: string;
   onClose: () => void;
+};
+
+type ActiveRenderTask = {
+  promise: Promise<unknown>;
+  cancel: () => void;
 };
 
 export default function PdfReader({ libraryId, path, title, onClose }: Props) {
@@ -69,7 +75,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
   useEffect(() => {
     if (!document) return;
     let cancelled = false;
-    let renderTask: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | null = null;
+    let renderTask: ActiveRenderTask | null = null;
 
     async function renderPage() {
       const canvas = canvasRef.current;
@@ -92,7 +98,8 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
         });
         await renderTask.promise;
       } catch (reason) {
-        if (!cancelled && String(reason) !== "RenderingCancelledException") setError(String(reason));
+        const message = String(reason);
+        if (!cancelled && !message.includes("RenderingCancelledException")) setError(message);
       } finally {
         if (!cancelled) setRendering(false);
       }
