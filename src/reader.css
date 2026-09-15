@@ -170,6 +170,62 @@
   font-variant-numeric: tabular-nums;
 }
 
+.reader-find-panel {
+  position: absolute;
+  z-index: 4;
+  top: 14px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 36px);
+  padding: 8px;
+  border: 1px solid var(--reader-border);
+  border-radius: 14px;
+  background: var(--reader-panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(16px);
+}
+
+.reader-find-panel input {
+  width: min(260px, 38vw);
+  min-width: 120px;
+  border: 1px solid var(--reader-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--reader-bg) 92%, transparent);
+  color: inherit;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.reader-find-panel input:focus {
+  border-color: color-mix(in srgb, currentColor 35%, var(--reader-border));
+}
+
+.reader-find-panel button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+
+.reader-find-panel button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.reader-find-count {
+  min-width: 50px;
+  color: var(--reader-muted);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .reader-body {
   min-width: 0;
   overflow: auto;
@@ -192,6 +248,29 @@
   font-family: ui-serif, "Noto Serif SC", "Songti SC", Georgia, serif;
   letter-spacing: 0.01em;
   color: var(--reader-text);
+}
+
+.reader-search-hit {
+  border-radius: 3px;
+  background: #ffe58a;
+  color: #30280d;
+  padding: 0 1px;
+}
+
+.reader-search-hit.active {
+  background: #ffb24d;
+  outline: 2px solid color-mix(in srgb, #ff9f2f 55%, transparent);
+  outline-offset: 1px;
+}
+
+.reader-theme-dark .reader-search-hit {
+  background: #705e12;
+  color: #fff3b0;
+}
+
+.reader-theme-dark .reader-search-hit.active {
+  background: #a86517;
+  color: #fff7dc;
 }
 
 .reader-footer-expanded {
@@ -337,8 +416,21 @@
     box-shadow: 18px 0 48px rgba(0, 0, 0, 0.18);
   }
 
+  .reader-find-panel {
+    top: 10px;
+    left: 12px;
+    right: 12px;
+    max-width: none;
+  }
+
+  .reader-find-panel input {
+    width: auto;
+    min-width: 0;
+    flex: 1;
+  }
+
   .reader-body {
-    padding: 24px 20px 40px;
+    padding: 60px 20px 40px;
   }
 
   .reader-footer-expanded {
