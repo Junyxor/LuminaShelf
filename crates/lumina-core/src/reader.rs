@@ -204,6 +204,7 @@ fn parse_epub3_nav(xml: &str) -> Vec<TocEntry> {
             let title = collapse_whitespace(
                 &node
                     .descendants()
+                    .filter(|child| child.is_text())
                     .filter_map(|child| child.text())
                     .collect::<Vec<_>>()
                     .join(" "),
