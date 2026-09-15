@@ -1,12 +1,12 @@
 mod pdf;
+mod reader_bridge;
 
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::{now_unix_ms, scan_folder},
-    open_book as open_reader_book, AppResolver, BookDetails, BookFormat, GutendexProvider,
-    LibraryItem, ProviderDescriptor, ProviderRegistry, ReaderBook, ReadingProgress, ReqwestResolver,
-    ResolveResult, ResolverPolicy, SearchQuery, SearchResult, StateStore, ZLibraryHistoryPage,
-    ZLibraryProfile, ZLibraryProvider,
+    AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
+    ProviderRegistry, ReadingProgress, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery,
+    SearchResult, StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
 use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
@@ -372,11 +372,6 @@ fn scan_library(
 }
 
 #[tauri::command]
-fn open_local_book(path: String) -> Result<ReaderBook, String> {
-    open_reader_book(path).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 fn reading_progress(
     state: State<'_, AppState>,
     library_id: String,
@@ -658,7 +653,9 @@ pub fn run() {
             book_details,
             library_items,
             scan_library,
-            open_local_book,
+            reader_bridge::open_local_book,
+            reader_bridge::open_local_book_metadata,
+            reader_bridge::open_local_book_chapter,
             reading_progress,
             save_reading_progress,
             download_book,
