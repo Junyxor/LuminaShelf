@@ -1,5 +1,4 @@
 use lumina_core::{open_book_chapter, open_book_metadata, ReaderBookMetadata, ReaderChapter};
-use serde::Serialize;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -8,22 +7,6 @@ use std::{
 };
 
 const MAX_CACHED_CHAPTERS: usize = 8;
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LazyReaderBook {
-    title: String,
-    chapters: Vec<LazyReaderChapter>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LazyReaderChapter {
-    id: String,
-    title: String,
-    text: String,
-    path: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ChapterCacheKey {
@@ -80,24 +63,6 @@ fn chapter_cache_key(path: &Path, chapter_id: String) -> Result<ChapterCacheKey,
     })
 }
 
-fn build_lazy_book(path: String) -> Result<LazyReaderBook, String> {
-    let metadata = open_book_metadata(&path).map_err(|error| error.to_string())?;
-    let chapters = metadata
-        .chapters
-        .into_iter()
-        .map(|chapter| LazyReaderChapter {
-            id: chapter.id,
-            title: chapter.title,
-            text: String::new(),
-            path: path.clone(),
-        })
-        .collect();
-    Ok(LazyReaderBook {
-        title: metadata.title,
-        chapters,
-    })
-}
-
 fn load_cached_chapter(path: String, chapter_id: String) -> Result<ReaderChapter, String> {
     let key = chapter_cache_key(Path::new(&path), chapter_id.clone())?;
     if let Some(chapter) = chapter_cache()
@@ -127,8 +92,8 @@ where
 }
 
 #[tauri::command]
-pub async fn open_local_book(path: String) -> Result<LazyReaderBook, String> {
-    run_reader_task(move || build_lazy_book(path)).await
+pub async fn open_local_book(path: String) -> Result<ReaderBookMetadata, String> {
+    open_local_book_metadata(path).await
 }
 
 #[tauri::command]
