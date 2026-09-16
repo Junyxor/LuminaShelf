@@ -70,10 +70,29 @@ export default function ReaderView({
   const chapterCount = book.chapters.length;
   const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
   const chapterText = chapter?.text || loadedChapter?.text || "";
+  const bookCacheKey = `${book.title}:${book.chapters.length}:${book.chapters[0]?.path ?? ""}`;
 
   useEffect(() => {
     localStorage.setItem("luminashelf.reader.preferences", JSON.stringify(preferences));
   }, [preferences]);
+
+  useEffect(() => {
+    setChapterCache({});
+    setChapterError(null);
+  }, [bookCacheKey]);
+
+  useEffect(() => {
+    const keepIds = new Set(
+      [chapterIndex - 1, chapterIndex, chapterIndex + 1]
+        .map((index) => book.chapters[index]?.id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    setChapterCache((current) => {
+      const entries = Object.entries(current).filter(([id]) => keepIds.has(id));
+      if (entries.length === Object.keys(current).length) return current;
+      return Object.fromEntries(entries);
+    });
+  }, [book.chapters, chapterIndex]);
 
   useEffect(() => {
     if (!chapter) return;
@@ -109,24 +128,30 @@ export default function ReaderView({
     return () => {
       cancelled = true;
     };
-  }, [chapter?.id, chapter?.path, chapter?.text]);
+  }, [chapter?.id, chapter?.path, chapter?.text, chapterCache]);
 
   useEffect(() => {
     if (!chapterText) return;
-    const next = book.chapters[chapterIndex + 1];
-    if (!next || next.text || chapterCache[next.id] || !next.path) return;
+    const adjacent = [book.chapters[chapterIndex - 1], book.chapters[chapterIndex + 1]].filter(
+      (item): item is ReaderChapter => Boolean(item),
+    );
+    const pending = adjacent.filter(
+      (item) => !item.text && !chapterCache[item.id] && Boolean(item.path),
+    );
+    if (pending.length === 0) return;
 
     let cancelled = false;
-    invoke<ReaderChapter>("open_local_book_chapter", {
-      path: next.path,
-      chapterId: next.id,
-    })
-      .then((loaded) => {
+    void Promise.allSettled(
+      pending.map(async (item) => {
+        const loaded = await invoke<ReaderChapter>("open_local_book_chapter", {
+          path: item.path,
+          chapterId: item.id,
+        });
         if (!cancelled) {
-          setChapterCache((current) => ({ ...current, [next.id]: loaded }));
+          setChapterCache((current) => ({ ...current, [item.id]: loaded }));
         }
-      })
-      .catch(() => undefined);
+      }),
+    );
 
     return () => {
       cancelled = true;
@@ -181,6 +206,7 @@ export default function ReaderView({
                   <button
                     key={`${item.id}:${index}`}
                     className={index === chapterIndex ? "active" : ""}
+                    disabled={chapterLoading}
                     onClick={() => {
                       onChapterChange(index);
                       setTocOpen(false);
@@ -244,8 +270,8 @@ export default function ReaderView({
           </div>
 
           <div className="reader-nav-actions">
-            <button className="ghost-button" disabled={chapterIndex === 0} onClick={() => onChapterChange(chapterIndex - 1)}>上一章</button>
-            <button className="primary-button" disabled={chapterIndex >= chapterCount - 1} onClick={() => onChapterChange(chapterIndex + 1)}>下一章</button>
+            <button className="ghost-button" disabled={chapterLoading || chapterIndex === 0} onClick={() => onChapterChange(chapterIndex - 1)}>上一章</button>
+            <button className="primary-button" disabled={chapterLoading || chapterIndex >= chapterCount - 1} onClick={() => onChapterChange(chapterIndex + 1)}>下一章</button>
           </div>
         </footer>
       </section>
