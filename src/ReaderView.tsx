@@ -128,7 +128,7 @@ export default function ReaderView({
     return () => {
       cancelled = true;
     };
-  }, [chapter?.id, chapter?.path, chapter?.text, chapterCache]);
+  }, [chapter?.id, chapter?.path, chapter?.text]);
 
   useEffect(() => {
     if (!chapterText) return;
@@ -156,7 +156,7 @@ export default function ReaderView({
     return () => {
       cancelled = true;
     };
-  }, [book.chapters, chapterCache, chapterIndex, chapterText]);
+  }, [book.chapters, chapterIndex, chapterText]);
 
   const chapterLabel = useMemo(
     () => `${chapter?.title ?? "未命名章节"} · ${chapterIndex + 1}/${chapterCount}`,
