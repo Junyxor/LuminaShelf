@@ -1,16 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+type ReaderChapterMetadata = {
+  id: string;
+  title: string;
+};
+
 type ReaderChapter = {
   id: string;
   title: string;
   text: string;
-  path?: string;
 };
 
-type ReaderBook = {
+type ReaderBookMetadata = {
   title: string;
-  chapters: ReaderChapter[];
+  chapters: ReaderChapterMetadata[];
 };
 
 type ReaderTheme = "light" | "sepia" | "dark";
@@ -22,7 +26,8 @@ type ReaderPreferences = {
 };
 
 type Props = {
-  book: ReaderBook;
+  book: ReaderBookMetadata;
+  bookPath: string;
   fallbackTitle: string;
   format: string;
   chapterIndex: number;
@@ -56,6 +61,7 @@ function loadPreferences(): ReaderPreferences {
 
 export default function ReaderView({
   book,
+  bookPath,
   fallbackTitle,
   format,
   chapterIndex,
@@ -75,8 +81,8 @@ export default function ReaderView({
   const chapter = book.chapters[chapterIndex];
   const chapterCount = book.chapters.length;
   const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
-  const chapterText = chapter?.text || loadedChapter?.text || "";
-  const bookCacheKey = `${book.title}:${book.chapters.length}:${book.chapters[0]?.path ?? ""}`;
+  const chapterText = loadedChapter?.text || "";
+  const bookCacheKey = `${book.title}:${book.chapters.length}:${bookPath}`;
 
   useEffect(() => {
     localStorage.setItem("luminashelf.reader.preferences", JSON.stringify(preferences));
@@ -102,14 +108,9 @@ export default function ReaderView({
 
   useEffect(() => {
     if (!chapter) return;
-    if (chapter.text || chapterCache[chapter.id]) {
+    if (chapterCache[chapter.id]) {
       setChapterLoading(false);
       setChapterError(null);
-      return;
-    }
-    if (!chapter.path) {
-      setChapterLoading(false);
-      setChapterError("章节正文路径缺失，无法按需加载。");
       return;
     }
 
@@ -117,7 +118,7 @@ export default function ReaderView({
     setChapterLoading(true);
     setChapterError(null);
     invoke<ReaderChapter>("open_local_book_chapter", {
-      path: chapter.path,
+      path: bookPath,
       chapterId: chapter.id,
     })
       .then((loaded) => {
@@ -134,23 +135,21 @@ export default function ReaderView({
     return () => {
       cancelled = true;
     };
-  }, [chapter?.id, chapter?.path, chapter?.text]);
+  }, [bookPath, chapter?.id]);
 
   useEffect(() => {
     if (!chapterText) return;
     const adjacent = [book.chapters[chapterIndex - 1], book.chapters[chapterIndex + 1]].filter(
-      (item): item is ReaderChapter => Boolean(item),
+      (item): item is ReaderChapterMetadata => Boolean(item),
     );
-    const pending = adjacent.filter(
-      (item) => !item.text && !chapterCache[item.id] && Boolean(item.path),
-    );
+    const pending = adjacent.filter((item) => !chapterCache[item.id]);
     if (pending.length === 0) return;
 
     let cancelled = false;
     void Promise.allSettled(
       pending.map(async (item) => {
         const loaded = await invoke<ReaderChapter>("open_local_book_chapter", {
-          path: item.path,
+          path: bookPath,
           chapterId: item.id,
         });
         if (!cancelled) {
@@ -162,7 +161,7 @@ export default function ReaderView({
     return () => {
       cancelled = true;
     };
-  }, [book.chapters, chapterIndex, chapterText]);
+  }, [bookPath, book.chapters, chapterIndex, chapterText]);
 
   useEffect(() => {
     function handleFindShortcut(event: KeyboardEvent) {
