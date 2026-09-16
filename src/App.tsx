@@ -60,15 +60,14 @@ type LibraryItem = {
   sourceBookId?: string | null;
 };
 
-type ReaderChapter = {
+type ReaderChapterMetadata = {
   id: string;
   title: string;
-  text: string;
 };
 
-type ReaderBook = {
+type ReaderBookMetadata = {
   title: string;
-  chapters: ReaderChapter[];
+  chapters: ReaderChapterMetadata[];
 };
 
 type ReadingProgress = {
@@ -189,7 +188,7 @@ export default function App() {
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [readerItem, setReaderItem] = useState<LibraryItem | null>(null);
-  const [readerBook, setReaderBook] = useState<ReaderBook | null>(null);
+  const [readerBook, setReaderBook] = useState<ReaderBookMetadata | null>(null);
   const [readerChapterIndex, setReaderChapterIndex] = useState(0);
   const [readerLoading, setReaderLoading] = useState(false);
   const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
@@ -416,7 +415,7 @@ export default function App() {
     setError(null);
     try {
       const [book, progress] = await Promise.all([
-        invoke<ReaderBook>("open_local_book", { path: item.path }),
+        invoke<ReaderBookMetadata>("open_local_book_metadata", { path: item.path }),
         invoke<ReadingProgress | null>("reading_progress", { libraryId: item.id }),
       ]);
       let chapterIndex = 0;
@@ -746,6 +745,7 @@ export default function App() {
       {readerItem && readerBook ? (
         <ReaderView
           book={readerBook}
+          bookPath={readerItem.path}
           fallbackTitle={readerItem.title}
           format={readerItem.format}
           chapterIndex={readerChapterIndex}
