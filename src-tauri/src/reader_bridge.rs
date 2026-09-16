@@ -92,6 +92,11 @@ where
 }
 
 #[tauri::command]
+pub async fn open_local_book(path: String) -> Result<ReaderBookMetadata, String> {
+    open_local_book_metadata(path).await
+}
+
+#[tauri::command]
 pub async fn open_local_book_metadata(path: String) -> Result<ReaderBookMetadata, String> {
     run_reader_task(move || open_book_metadata(path).map_err(|error| error.to_string())).await
 }
