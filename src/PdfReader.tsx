@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   GlobalWorkerOptions,
+  PDFDataRangeTransport,
   getDocument,
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
@@ -10,6 +11,9 @@ import { useEffect, useRef, useState } from "react";
 import "./pdf.css";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
+const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
 
 type ReadingProgress = {
   libraryId: string;
@@ -30,6 +34,63 @@ type ActiveRenderTask = {
   cancel: () => void;
 };
 
+type PdfRangePayload = {
+  length: number;
+  data: Uint8Array;
+};
+
+function decodePdfRangePayload(buffer: ArrayBuffer): PdfRangePayload {
+  if (buffer.byteLength < PDF_RANGE_LENGTH_PREFIX_BYTES) {
+    throw new Error("PDF range response is missing its length prefix");
+  }
+  const rawLength = new DataView(buffer).getBigUint64(0, true);
+  if (rawLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("PDF is too large for JavaScript range addressing");
+  }
+  return {
+    length: Number(rawLength),
+    data: new Uint8Array(buffer, PDF_RANGE_LENGTH_PREFIX_BYTES).slice(),
+  };
+}
+
+class TauriPdfRangeTransport extends PDFDataRangeTransport {
+  private readonly path: string;
+  private readonly onRangeError: (reason: unknown) => void;
+  private aborted = false;
+
+  constructor(
+    path: string,
+    length: number,
+    initialData: Uint8Array,
+    onRangeError: (reason: unknown) => void,
+  ) {
+    super(length, initialData);
+    this.path = path;
+    this.onRangeError = onRangeError;
+  }
+
+  requestDataRange(begin: number, end: number) {
+    if (this.aborted) return;
+    void invoke<ArrayBuffer>("read_pdf_bytes", {
+      path: this.path,
+      start: begin,
+      end,
+    })
+      .then((buffer) => {
+        if (this.aborted) return;
+        const payload = decodePdfRangePayload(buffer);
+        this.onDataRange(begin, payload.data);
+      })
+      .catch((reason) => {
+        if (!this.aborted) this.onRangeError(reason);
+      });
+  }
+
+  abort() {
+    this.aborted = true;
+  }
+}
+
 export default function PdfReader({ libraryId, path, title, onClose }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
@@ -42,17 +103,41 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     let loadingTask: PDFDocumentLoadingTask | null = null;
+    let rangeTransport: TauriPdfRangeTransport | null = null;
 
     async function load() {
       setLoading(true);
       setError(null);
       try {
-        const [buffer, progress] = await Promise.all([
-          invoke<ArrayBuffer>("read_pdf_bytes", { path }),
+        const [initialBuffer, progress] = await Promise.all([
+          invoke<ArrayBuffer>("read_pdf_bytes", {
+            path,
+            start: 0,
+            end: PDF_RANGE_CHUNK_SIZE,
+          }),
           invoke<ReadingProgress | null>("reading_progress", { libraryId }),
         ]);
         if (cancelled) return;
-        loadingTask = getDocument({ data: new Uint8Array(buffer) });
+
+        const initial = decodePdfRangePayload(initialBuffer);
+        rangeTransport = new TauriPdfRangeTransport(
+          path,
+          initial.length,
+          initial.data,
+          (reason) => {
+            if (!cancelled) {
+              setError(String(reason));
+              setLoading(false);
+              void loadingTask?.destroy();
+            }
+          },
+        );
+        loadingTask = getDocument({
+          range: rangeTransport,
+          rangeChunkSize: PDF_RANGE_CHUNK_SIZE,
+          disableAutoFetch: true,
+          disableStream: true,
+        });
         const loadedDocument = await loadingTask.promise;
         if (cancelled) return;
         const savedPage = progress?.locator?.startsWith("page:")
@@ -70,6 +155,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
     void load();
     return () => {
       cancelled = true;
+      rangeTransport?.abort();
       if (loadingTask) void loadingTask.destroy();
     };
   }, [libraryId, path]);
@@ -142,7 +228,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
         </header>
 
         <div className="pdf-stage">
-          {loading ? <div className="pdf-status">正在通过 Rust Core 读取 PDF…</div> : null}
+          {loading ? <div className="pdf-status">正在通过 Rust Core 分块读取 PDF…</div> : null}
           {error ? <div className="pdf-status error">{error}</div> : null}
           {!loading && !error ? (
             <div className={`pdf-canvas-wrap ${rendering ? "rendering" : ""}`}>
