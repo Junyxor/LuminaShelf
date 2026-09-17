@@ -26,6 +26,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Generate desktop icon set
+        shell: pwsh
+        run: |
+          Copy-Item "src-tauri/icons/icon.png" "app-icon.png"
+          npm run tauri -- icon app-icon.png
+
       - name: Build Windows NSIS installer
         run: npm run tauri -- build --bundles nsis
 
