@@ -43,7 +43,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-windows-x64
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -52,6 +52,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $installer = Get-ChildItem "target/release/bundle/nsis/*.exe" | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer was not produced" }
           gh release create "${{ github.ref_name }}" "$($installer.FullName)" --title "LuminaShelf ${{ github.ref_name }}" --generate-notes
