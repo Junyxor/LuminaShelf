@@ -1,19 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  GlobalWorkerOptions,
-  PDFDataRangeTransport,
-  getDocument,
-  type PDFDocumentLoadingTask,
-  type PDFDocumentProxy,
+import type {
+  PDFDataRangeTransport as PDFDataRangeTransportType,
+  PDFDocumentLoadingTask,
+  PDFDocumentProxy,
 } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { useEffect, useRef, useState } from "react";
 import "./pdf.css";
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
 const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
 const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
+
+type PdfJsRuntime = typeof import("pdfjs-dist");
+
+let pdfJsRuntimePromise: Promise<PdfJsRuntime> | null = null;
+
+function loadPdfJsRuntime(): Promise<PdfJsRuntime> {
+  if (!pdfJsRuntimePromise) {
+    pdfJsRuntimePromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.mjs?url"),
+    ]).then(([pdfJs, worker]) => {
+      pdfJs.GlobalWorkerOptions.workerSrc = worker.default;
+      return pdfJs;
+    });
+  }
+  return pdfJsRuntimePromise;
+}
 
 type ReadingProgress = {
   libraryId: string;
@@ -53,42 +65,45 @@ function decodePdfRangePayload(buffer: ArrayBuffer): PdfRangePayload {
   };
 }
 
-class TauriPdfRangeTransport extends PDFDataRangeTransport {
-  private readonly path: string;
-  private readonly onRangeError: (reason: unknown) => void;
-  private aborted = false;
+type RangeTransportHandle = PDFDataRangeTransportType & {
+  abort: () => void;
+};
 
-  constructor(
-    path: string,
-    length: number,
-    initialData: Uint8Array,
-    onRangeError: (reason: unknown) => void,
-  ) {
-    super(length, initialData);
-    this.path = path;
-    this.onRangeError = onRangeError;
-  }
+function createTauriPdfRangeTransport(
+  pdfJs: PdfJsRuntime,
+  path: string,
+  length: number,
+  initialData: Uint8Array,
+  onRangeError: (reason: unknown) => void,
+): RangeTransportHandle {
+  return new (class extends pdfJs.PDFDataRangeTransport {
+    private aborted = false;
 
-  requestDataRange(begin: number, end: number) {
-    if (this.aborted) return;
-    void invoke<ArrayBuffer>("read_pdf_bytes", {
-      path: this.path,
-      start: begin,
-      end,
-    })
-      .then((buffer) => {
-        if (this.aborted) return;
-        const payload = decodePdfRangePayload(buffer);
-        this.onDataRange(begin, payload.data);
+    constructor() {
+      super(length, initialData);
+    }
+
+    requestDataRange(begin: number, end: number) {
+      if (this.aborted) return;
+      void invoke<ArrayBuffer>("read_pdf_bytes", {
+        path,
+        start: begin,
+        end,
       })
-      .catch((reason) => {
-        if (!this.aborted) this.onRangeError(reason);
-      });
-  }
+        .then((buffer) => {
+          if (this.aborted) return;
+          const payload = decodePdfRangePayload(buffer);
+          this.onDataRange(begin, payload.data);
+        })
+        .catch((reason) => {
+          if (!this.aborted) onRangeError(reason);
+        });
+    }
 
-  abort() {
-    this.aborted = true;
-  }
+    abort() {
+      this.aborted = true;
+    }
+  })();
 }
 
 export default function PdfReader({ libraryId, path, title, onClose }: Props) {
@@ -103,13 +118,14 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     let loadingTask: PDFDocumentLoadingTask | null = null;
-    let rangeTransport: TauriPdfRangeTransport | null = null;
+    let rangeTransport: RangeTransportHandle | null = null;
 
     async function load() {
       setLoading(true);
       setError(null);
       try {
-        const [initialBuffer, progress] = await Promise.all([
+        const [pdfJs, initialBuffer, progress] = await Promise.all([
+          loadPdfJsRuntime(),
           invoke<ArrayBuffer>("read_pdf_bytes", {
             path,
             start: 0,
@@ -120,7 +136,8 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
         if (cancelled) return;
 
         const initial = decodePdfRangePayload(initialBuffer);
-        rangeTransport = new TauriPdfRangeTransport(
+        rangeTransport = createTauriPdfRangeTransport(
+          pdfJs,
           path,
           initial.length,
           initial.data,
@@ -132,7 +149,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
             }
           },
         );
-        loadingTask = getDocument({
+        loadingTask = pdfJs.getDocument({
           range: rangeTransport,
           rangeChunkSize: PDF_RANGE_CHUNK_SIZE,
           disableAutoFetch: true,
