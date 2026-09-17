@@ -48,7 +48,9 @@ jobs:
         run: npm install
 
       - name: Initialize Android project
-        run: npm run tauri -- android init --ci
+        run: |
+          npm run tauri -- android init --ci
+          node scripts/patch-android-keyring.mjs
 
       - name: Resolve Android NDK
         shell: bash
@@ -60,8 +62,38 @@ jobs:
           echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
 
+      - name: Check Android Rust bridge
+        shell: bash
+        run: |
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo check -p lumina-shelf-desktop --target aarch64-linux-android
+
+      - name: Link Android Rust library
+        shell: bash
+        run: |
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo build -p lumina-shelf-desktop --lib --target aarch64-linux-android
+
       - name: Build arm64 debug APK
-        run: npm run tauri -- android build --debug --apk --target aarch64
+        shell: bash
+        run: |
+          set +e
+          npm run tauri -- android build --debug --apk --target aarch64 > /tmp/android-build.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "=== Android build key errors ==="
+            grep -n -E 'error\[|error:|FAILED|undefined reference|cannot find|keyring|jni|ndk|linker|e: file://' /tmp/android-build.log | tail -n 140 || true
+            echo "=== Android build tail ==="
+            tail -n 180 /tmp/android-build.log
+            exit "$status"
+          fi
 
       - name: Stage APK
         shell: bash
