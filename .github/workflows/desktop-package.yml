@@ -2,6 +2,10 @@ name: Desktop Package
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-package.yml"
+      - "src-tauri/tauri.conf.json"
   push:
     tags:
       - "v*"
