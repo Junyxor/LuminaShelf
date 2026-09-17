@@ -19,10 +19,15 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 url.workspace = true
+uuid.workspace = true
 tauri = { version = "2", features = [] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-android-fs = "29.0.0"
 jni = "0.21.1"
 keyring = { version = "4.2.0", default-features = false, features = ["cli"] }
 keyring-core = "1.0.0"
 ndk-context = "0.1.1"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri-plugin-dialog = "2"

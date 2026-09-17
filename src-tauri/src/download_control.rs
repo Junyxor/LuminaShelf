@@ -1,90 +1,160 @@
-use std::{collections::HashMap, future::Future, sync::OnceLock, time::Duration};
-use tokio::{
-    sync::{watch, RwLock},
-    time::{sleep, Instant},
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, Mutex},
 };
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransferControl {
+pub enum TransferControl {
     Running,
     Paused,
     Cancelled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ControlledDownload<T> {
     Finished(T),
     Paused,
     Cancelled,
-    AlreadyActive,
 }
 
-fn active_transfers() -> &'static RwLock<HashMap<String, watch::Sender<TransferControl>>> {
-    static ACTIVE: OnceLock<RwLock<HashMap<String, watch::Sender<TransferControl>>>> =
-        OnceLock::new();
-    ACTIVE.get_or_init(|| RwLock::new(HashMap::new()))
+struct ActiveTransfer {
+    control: watch::Sender<TransferControl>,
+    finished: watch::Receiver<()>,
 }
 
-pub async fn run_controlled<F, T>(task_id: String, future: F) -> ControlledDownload<T>
-where
-    F: Future<Output = T>,
-{
-    let (tx, mut rx) = watch::channel(TransferControl::Running);
-    {
-        let mut active = active_transfers().write().await;
-        if active.contains_key(&task_id) {
-            return ControlledDownload::AlreadyActive;
+#[derive(Clone, Default)]
+pub struct TransferRegistry(Arc<Mutex<HashMap<String, ActiveTransfer>>>);
+
+// The lease covers acquisition, transfer, progress draining and final persistence.
+// A new attempt cannot take ownership until all of those steps have finished.
+pub struct TransferLease {
+    registry: TransferRegistry,
+    id: String,
+    control: watch::Receiver<TransferControl>,
+    _finished: watch::Sender<()>,
+}
+
+impl TransferRegistry {
+    pub fn begin(&self, id: &str) -> Result<TransferLease, String> {
+        let mut active = self
+            .0
+            .lock()
+            .map_err(|_| "download registry is unavailable")?;
+        if active.contains_key(id) {
+            return Err("download task is already active".into());
         }
-        active.insert(task_id.clone(), tx);
+        let (control, rx) = watch::channel(TransferControl::Running);
+        let (finished, finished_rx) = watch::channel(());
+        active.insert(
+            id.into(),
+            ActiveTransfer {
+                control,
+                finished: finished_rx,
+            },
+        );
+        Ok(TransferLease {
+            registry: self.clone(),
+            id: id.into(),
+            control: rx,
+            _finished: finished,
+        })
     }
 
-    let outcome = tokio::select! {
-        result = future => ControlledDownload::Finished(result),
-        changed = rx.changed() => {
-            if changed.is_err() {
-                ControlledDownload::Cancelled
-            } else {
-                match *rx.borrow() {
-                    TransferControl::Paused => ControlledDownload::Paused,
-                    TransferControl::Cancelled => ControlledDownload::Cancelled,
-                    TransferControl::Running => ControlledDownload::Cancelled,
+    pub async fn stop(&self, id: &str, control: TransferControl) -> Result<bool, String> {
+        let mut finished = {
+            let active = self
+                .0
+                .lock()
+                .map_err(|_| "download registry is unavailable")?;
+            let Some(transfer) = active.get(id) else {
+                return Ok(false);
+            };
+            // The first control request wins; a later cancel cannot race a pause.
+            transfer.control.send_if_modified(|current| {
+                if *current != TransferControl::Running {
+                    return false;
+                }
+                *current = control;
+                true
+            });
+            transfer.finished.clone()
+        };
+        // This sender is dropped only after the worker persists its final state.
+        let _ = finished.changed().await;
+        Ok(true)
+    }
+}
+
+impl TransferLease {
+    pub async fn run<F: Future>(&mut self, future: F) -> ControlledDownload<F::Output> {
+        tokio::select! {
+            biased;
+            control = self.control.wait_for(|value| *value != TransferControl::Running) => {
+                match control.as_deref() {
+                    Ok(TransferControl::Paused) => ControlledDownload::Paused,
+                    _ => ControlledDownload::Cancelled,
                 }
             }
+            result = future => ControlledDownload::Finished(result),
         }
-    };
-
-    active_transfers().write().await.remove(&task_id);
-    outcome
-}
-
-async fn signal_and_wait(task_id: &str, control: TransferControl) -> bool {
-    let sender = {
-        let active = active_transfers().read().await;
-        active.get(task_id).cloned()
-    };
-    let Some(sender) = sender else {
-        return false;
-    };
-    if sender.send(control).is_err() {
-        return false;
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if !active_transfers().read().await.contains_key(task_id) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return true;
-        }
-        sleep(Duration::from_millis(10)).await;
     }
 }
 
-pub async fn pause(task_id: &str) -> bool {
-    signal_and_wait(task_id, TransferControl::Paused).await
+impl Drop for TransferLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.registry.0.lock() {
+            active.remove(&self.id);
+        }
+    }
 }
 
-pub async fn cancel(task_id: &str) -> bool {
-    signal_and_wait(task_id, TransferControl::Cancelled).await
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::pending;
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn pause_waits_for_finalization_and_blocks_overlapping_attempts() {
+        let registry = TransferRegistry::default();
+        let mut lease = registry.begin("book").unwrap();
+        assert!(registry.begin("book").is_err());
+        let stop = registry.stop("book", TransferControl::Paused);
+        tokio::pin!(stop);
+        {
+            let transfer = lease.run(pending::<()>());
+            tokio::pin!(transfer);
+            tokio::select! {
+                result = &mut stop => panic!("pause returned before cleanup: {result:?}"),
+                outcome = &mut transfer => assert_eq!(outcome, ControlledDownload::Paused),
+            }
+        }
+        assert!(registry.begin("book").is_err());
+        assert!(timeout(Duration::from_millis(20), &mut stop).await.is_err());
+        drop(lease);
+        assert!(timeout(Duration::from_secs(1), stop)
+            .await
+            .unwrap()
+            .unwrap());
+        assert!(registry.begin("book").is_ok());
+    }
+
+    #[tokio::test]
+    async fn completed_transfer_holds_ownership_until_record_is_saved() {
+        let registry = TransferRegistry::default();
+        let mut lease = registry.begin("book").unwrap();
+        assert_eq!(
+            lease.run(async { 42 }).await,
+            ControlledDownload::Finished(42)
+        );
+        assert!(registry.begin("book").is_err());
+        drop(lease);
+        assert!(!registry
+            .stop("book", TransferControl::Cancelled)
+            .await
+            .unwrap());
+        assert!(registry.begin("book").is_ok());
+    }
 }

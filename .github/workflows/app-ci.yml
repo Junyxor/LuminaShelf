@@ -22,12 +22,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
+      - name: Test app workflows
+        run: npm test
       - name: Build frontend
         run: npm run build
       - name: Check Tauri formatting
         run: cargo fmt -p lumina-shelf-desktop -- --check
       - name: Check Tauri bridge
-        run: cargo check -p lumina-shelf-desktop
+        run: cargo check --locked -p lumina-shelf-desktop
       - name: Test Tauri bridge
-        run: cargo test -p lumina-shelf-desktop --lib
+        run: cargo test --locked -p lumina-shelf-desktop --lib

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
 import PdfReader from "./PdfReader";
 import ReaderView from "./ReaderView";
@@ -10,6 +10,7 @@ type CoreStatus = {
   name: string;
   version: string;
   rustCore: boolean;
+  platform: string;
   networkStack: string;
 };
 
@@ -85,14 +86,6 @@ type DownloadState =
   | "completed"
   | "failed"
   | "cancelled";
-
-type DownloadProgressEvent = {
-  taskId: string;
-  providerId: string;
-  bookId: string;
-  downloadedBytes: number;
-  totalBytes?: number | null;
-};
 
 type DownloadReceipt = {
   path: string;
@@ -240,6 +233,12 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 
   const [query, setQuery] = useState("");
+  const searchVersion = useRef(0);
+  const detailsVersion = useRef(0);
+  const pendingDownloads = useRef(new Set<string>());
+  const [taskActions, setTaskActions] = useState<Set<string>>(new Set());
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [searching, setSearching] = useState(false);
@@ -257,7 +256,7 @@ export default function App() {
   const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
 
   useEffect(() => {
-    localStorage.setItem("luminashelf.settings", JSON.stringify(settings));
+    try { localStorage.setItem("luminashelf.settings", JSON.stringify(settings)); } catch { /* Storage may be unavailable. */ }
   }, [settings]);
 
   useEffect(() => {
@@ -287,31 +286,22 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
-    listen<DownloadProgressEvent>("download-progress", (event) => {
-      const progress = event.payload;
-      setDownloads((current) => {
-        const task = current[progress.taskId];
-        if (!task) return current;
-        return {
-          ...current,
-          [progress.taskId]: {
-            ...task,
-            state: "downloading",
-            downloadedBytes: progress.downloadedBytes,
-            totalBytes: progress.totalBytes,
-            error: undefined,
-          },
-        };
-      });
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+    const stops: Array<() => void> = [];
+    const subscriptions = [
+      listen<PersistedDownloadTask>("download-task-updated", ({ payload }) => {
+        setDownloads((current) => ({ ...current, ...restoreDownloads([payload]) }));
+      }),
+      listen("library-updated", () => {
+        void invoke<LibraryItem[]>("library_items").then(setLibraryItems).catch((reason) => setError(String(reason)));
+      }),
+    ];
+    for (const subscription of subscriptions) {
+      void subscription.then((stop) => {
+        if (disposed) stop();
+        else stops.push(stop);
+      }).catch((reason) => { if (!disposed) setError(String(reason)); });
+    }
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
   }, []);
 
   const active = pageMeta[page];
@@ -335,6 +325,10 @@ export default function App() {
     : 0;
 
   function changeProvider(providerId: string) {
+    searchVersion.current += 1;
+    detailsVersion.current += 1;
+    setSearching(false);
+    setDetailsLoading(false);
     setSelectedProvider(providerId);
     setSearchResult(null);
     setSelectedBook(null);
@@ -357,6 +351,7 @@ export default function App() {
 
   async function runSearch(targetPage = 1) {
     if (!query.trim() || !selectedProvider || providerNeedsLogin) return;
+    const version = ++searchVersion.current;
     setSearching(true);
     setError(null);
     try {
@@ -367,11 +362,11 @@ export default function App() {
         pageSize: settings.searchPageSize,
         formats: [],
       });
-      setSearchResult(result);
+      if (version === searchVersion.current) setSearchResult(result);
     } catch (reason) {
-      setError(String(reason));
+      if (version === searchVersion.current) setError(String(reason));
     } finally {
-      setSearching(false);
+      if (version === searchVersion.current) setSearching(false);
     }
   }
 
@@ -381,6 +376,7 @@ export default function App() {
   }
 
   async function openDetails(book: BookSummary) {
+    const version = ++detailsVersion.current;
     setSelectedBook(book);
     setBookDetails(null);
     setDetailsLoading(true);
@@ -390,11 +386,11 @@ export default function App() {
         providerId: selectedProvider,
         bookId: book.id,
       });
-      setBookDetails(details);
+      if (version === detailsVersion.current) setBookDetails(details);
     } catch (reason) {
-      setError(String(reason));
+      if (version === detailsVersion.current) setError(String(reason));
     } finally {
-      setDetailsLoading(false);
+      if (version === detailsVersion.current) setDetailsLoading(false);
     }
   }
 
@@ -411,6 +407,8 @@ export default function App() {
     }
 
     const key = taskKey(providerId, bookId, format);
+    if (pendingDownloads.current.has(key)) return;
+    pendingDownloads.current.add(key);
     setDownloads((current) => {
       const existing = current[key];
       return {
@@ -470,6 +468,8 @@ export default function App() {
         return;
       }
       setError(message);
+    } finally {
+      pendingDownloads.current.delete(key);
     }
   }
 
@@ -486,35 +486,15 @@ export default function App() {
     await queueDownload(task.providerId, task.bookId, task.title, task.format);
   }
 
-  async function pauseDownload(task: DownloadTask) {
+  async function controlDownload(task: DownloadTask, command: "pause_download" | "cancel_download") {
+    setTaskActions((current) => new Set(current).add(task.key));
     try {
-      const accepted = await invoke<boolean>("pause_download", { taskId: task.key });
-      if (!accepted) {
-        await refreshDownloads();
-        return;
-      }
-      setDownloads((current) => ({
-        ...current,
-        [task.key]: { ...current[task.key], state: "paused" },
-      }));
+      await invoke<boolean>(command, { taskId: task.key });
+      await refreshDownloads();
     } catch (reason) {
       setError(String(reason));
-    }
-  }
-
-  async function cancelDownload(task: DownloadTask) {
-    try {
-      const accepted = await invoke<boolean>("cancel_download", { taskId: task.key });
-      if (!accepted) {
-        await refreshDownloads();
-        return;
-      }
-      setDownloads((current) => ({
-        ...current,
-        [task.key]: { ...current[task.key], state: "cancelled" },
-      }));
-    } catch (reason) {
-      setError(String(reason));
+    } finally {
+      setTaskActions((current) => { const next = new Set(current); next.delete(task.key); return next; });
     }
   }
 
@@ -529,6 +509,26 @@ export default function App() {
     } catch (reason) {
       setError(String(reason));
     }
+  }
+
+  async function importLibrary() {
+    setLibraryLoading(true);
+    setError(null);
+    setImportMessage(null);
+    try {
+      const report = await invoke<{ items: LibraryItem[]; imported: number; errors: string[] }>("import_library_files");
+      setLibraryItems(report.items);
+      if (report.imported) setImportMessage(`已导入 ${report.imported} 本书，文件已保存在应用书库。`);
+      if (report.errors.length) setError(report.errors.join("；"));
+    } catch (reason) { setError(String(reason)); }
+    finally { setLibraryLoading(false); }
+  }
+
+  async function chooseFolder() {
+    try {
+      const path = await invoke<string | null>("choose_library_folder");
+      if (path) setSettings((current) => ({ ...current, libraryDirectory: path }));
+    } catch (reason) { setError(String(reason)); }
   }
 
   async function scanLibrary() {
@@ -638,13 +638,13 @@ export default function App() {
         </section>
 
         <section className="cards">
-          <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
+          <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>{status?.rustCore ? "网络服务已连接" : "正在连接核心服务"}</small></article>
           <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>已持久化本地书籍</small></article>
           <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 持久化任务</small></article>
         </section>
 
         <section className="workspace glass">
-          <div className="workspace-title"><div><span className="eyebrow">PROVIDERS</span><h3>数据源状态</h3></div><span className="status-dot">● READY</span></div>
+          <div className="workspace-title"><div><span className="eyebrow">PROVIDERS</span><h3>数据源状态</h3></div><span className="status-dot">{status?.rustCore ? "● READY" : "CONNECTING"}</span></div>
           <div className="provider-list">
             {providers.map((provider) => (
               <div className="provider-row" key={provider.id}>
@@ -667,8 +667,8 @@ export default function App() {
       <>
         <section className="search-panel glass">
           <form className="search-form" onSubmit={submitSearch}>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="书名、作者、关键词…" autoFocus />
-            <select value={selectedProvider} onChange={(event) => changeProvider(event.target.value)}>
+            <input aria-label="搜索电子书" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="书名、作者、关键词…" autoFocus />
+            <select aria-label="数据源" value={selectedProvider} onChange={(event) => changeProvider(event.target.value)}>
               {providers.filter((provider) => provider.capabilities.searchable).map((provider) => (
                 <option value={provider.id} key={provider.id}>{provider.name}</option>
               ))}
@@ -752,9 +752,9 @@ export default function App() {
                   <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
                   <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.error ?? task.path ?? (task.state === "paused" ? "上次退出时未完成，可继续" : "Rust segmented downloader")}</span></div>
                   <div className="download-actions">
-                    {task.state === "downloading" ? <button className="ghost-button" onClick={() => void pauseDownload(task)}>暂停</button> : null}
-                    {task.state === "downloading" ? <button className="ghost-button danger" onClick={() => void cancelDownload(task)}>取消</button> : null}
-                    {canResume ? <button className="primary-button small" onClick={() => void retryDownload(task)}>继续</button> : null}
+                    {["queued", "connecting", "downloading"].includes(task.state) ? <button className="ghost-button" disabled={taskActions.has(task.key)} onClick={() => void controlDownload(task, "pause_download")}>暂停</button> : null}
+                    {["queued", "connecting", "downloading"].includes(task.state) ? <button className="ghost-button danger" disabled={taskActions.has(task.key)} onClick={() => void controlDownload(task, "cancel_download")}>取消</button> : null}
+                    {canResume ? <button className="primary-button small" disabled={taskActions.has(task.key)} onClick={() => void retryDownload(task)}>继续</button> : null}
                     {!isActive ? <button className="ghost-button" onClick={() => void removeDownload(task)}>移除记录</button> : null}
                   </div>
                 </article>
@@ -771,14 +771,20 @@ export default function App() {
       <>
         <section className="search-panel glass">
           <div className="library-toolbar">
-            <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
-            <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
+            <button className="primary-button" disabled={libraryLoading} onClick={() => void importLibrary()}>{libraryLoading ? "处理中…" : "导入电子书"}</button>
+            <input aria-label="筛选书库" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="筛选书名、作者或格式…" />
           </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 内置阅读器支持 EPUB / TXT / PDF</div>
+          {status?.platform !== "android" ? <div className="library-toolbar library-scan">
+            <input aria-label="书库目录" value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="也可选择已有书库目录" />
+            <button className="ghost-button" disabled={libraryLoading} onClick={() => void chooseFolder()}>选择目录</button>
+            <button className="ghost-button" disabled={libraryLoading || !settings.libraryDirectory.trim()} onClick={() => void scanLibrary()}>扫描书库</button>
+          </div> : null}
+          <div className="search-hint">导入会保留原文件 · 内置阅读器支持 EPUB / TXT / PDF · 书库和阅读位置自动保存</div>
+          {importMessage ? <div className="search-hint" role="status">{importMessage}</div> : null}
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
-            {libraryItems.map((item) => {
+            {libraryItems.filter((item) => `${item.title} ${item.authors.join(" ")} ${item.format}`.toLowerCase().includes(libraryQuery.trim().toLowerCase())).map((item) => {
               const readable = item.format === "epub" || item.format === "txt" || item.format === "pdf";
               return (
                 <article className="library-card glass" key={`${item.id}:${item.path}`}>
@@ -798,7 +804,7 @@ export default function App() {
             })}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书。书架会持久化保存，下次启动自动恢复。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>点击「导入电子书」，或从搜索页下载一本书。重启后仍可继续阅读。</p></section>
         )}
       </>
     );
@@ -844,8 +850,8 @@ export default function App() {
       <aside className="sidebar glass">
         <div className="brand-bar">
           <button className="brand" onClick={() => setPage("home")} aria-label="返回总览">
-            <div className="brand-mark">Z</div>
-            <div className="brand-copy"><strong>LuminaShelf</strong><span>Rust library client</span></div>
+            <div className="brand-mark">L</div>
+            <div className="brand-copy"><strong>LuminaShelf</strong><span>星书 · 随时继续阅读</span></div>
           </button>
           <div className="utility-buttons">
             <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户" title="账户"><span className={zlibraryStatus?.signedIn ? "utility-online" : ""}>○</span></button>
@@ -854,7 +860,7 @@ export default function App() {
         </div>
         <nav className="primary-nav">
           {nav.map((item) => (
-            <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}>
+            <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}>
               <span className="glyph">{item.glyph}</span><span>{item.label}</span>
             </button>
           ))}
@@ -874,7 +880,7 @@ export default function App() {
           {page === "settings" || page === "account" ? <button className="ghost-button header-back" onClick={() => setPage("home")}>← 返回总览</button> : <div className="version-chip">v{status?.version ?? "0.5.0"}</div>}
         </header>
 
-        {error ? <section className="notice error"><span>Core bridge</span><strong>{error}</strong><button onClick={() => setError(null)}>×</button></section> : null}
+        {error ? <section className="notice error" role="alert"><span>Core bridge</span><strong>{error}</strong><button onClick={() => setError(null)}>×</button></section> : null}
 
         {page === "home" ? renderHome() : null}
         {page === "search" ? renderSearch() : null}
@@ -885,7 +891,7 @@ export default function App() {
       </main>
 
       <nav className="mobile-nav glass">
-        {nav.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><span>{item.glyph}</span><small>{item.label}</small></button>)}
+        {nav.map((item) => <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><span>{item.glyph}</span><small>{item.label}</small></button>)}
       </nav>
 
       {selectedBook ? (

@@ -8,3 +8,4 @@ target/
 src-tauri/gen/
 
 *.tsbuildinfo
+artifacts/

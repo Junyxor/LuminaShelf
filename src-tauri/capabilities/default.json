@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local application window event and core permissions. File access is exposed through validated Rust commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

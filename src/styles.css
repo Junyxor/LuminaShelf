@@ -310,6 +310,9 @@ select option { background: #0a1220; }
 .readout span { color: #6984a5; }
 .readout strong { text-align: right; color: #c5d7ec; font-weight: 600; }
 .account-placeholder { margin-top: 20px; padding: 14px; border-radius: 12px; background: rgba(15,31,50,.58); color: #8aa3c0; font-size: 12px; }
+.library-scan { margin-top: 12px; }
+.library-toolbar { flex-wrap: wrap; }
+.library-toolbar input { min-width: 160px; }
 .account-placeholder i { background: #8497ad; box-shadow: none; }
 
 .detail-backdrop { position: fixed; z-index: 80; inset: 0; display: flex; justify-content: flex-end; background: rgba(1,6,12,.52); backdrop-filter: blur(8px); }

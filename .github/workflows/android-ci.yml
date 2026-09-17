@@ -45,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Initialize Android project
         run: |
@@ -70,7 +70,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
           export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
           export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-          cargo check -p lumina-shelf-desktop --target aarch64-linux-android
+          cargo check --locked -p lumina-shelf-desktop --target aarch64-linux-android
 
       - name: Link Android Rust library
         shell: bash

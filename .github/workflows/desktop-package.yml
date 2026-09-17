@@ -5,7 +5,12 @@ on:
   pull_request:
     paths:
       - ".github/workflows/desktop-package.yml"
-      - "src-tauri/tauri.conf.json"
+      - "src-tauri/**"
+      - "crates/**"
+      - "src/**"
+      - "scripts/smoke-desktop.mjs"
+      - "package*.json"
+      - "Cargo.*"
   push:
     tags:
       - "v*"
@@ -28,13 +33,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Generate desktop icon set
         shell: pwsh
         run: |
           Copy-Item "src-tauri/icons/icon.png" "app-icon.png"
           npm run tauri -- icon app-icon.png
+
+      - name: Build and smoke test Windows app
+        run: |
+          npm run tauri -- build --debug --no-bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-windows-smoke
+          path: artifacts/smoke/
 
       - name: Build Windows NSIS installer
         run: npm run tauri -- build --bundles nsis
