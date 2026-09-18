@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import ReaderBookmarks from "./ReaderBookmarks";
+import { parseReaderPosition } from "./readerPosition";
 
 type ReaderChapterMetadata = {
   id: string;
@@ -10,6 +12,7 @@ type ReaderChapter = {
   id: string;
   title: string;
   text: string;
+  html?: string | null;
 };
 
 type ReaderBookMetadata = {
@@ -26,6 +29,8 @@ type ReaderPreferences = {
 };
 
 type Props = {
+  libraryId: string;
+  initialScroll: number;
   book: ReaderBookMetadata;
   bookPath: string;
   fallbackTitle: string;
@@ -60,6 +65,8 @@ function loadPreferences(): ReaderPreferences {
 }
 
 export default function ReaderView({
+  libraryId,
+  initialScroll,
   book,
   bookPath,
   fallbackTitle,
@@ -78,11 +85,55 @@ export default function ReaderView({
   const [chapterLoading, setChapterLoading] = useState(false);
   const [chapterError, setChapterError] = useState<string | null>(null);
   const matchRefs = useRef<Array<HTMLElement | null>>([]);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const scrollFraction = useRef(initialScroll);
+  const pendingScroll = useRef(initialScroll);
+  const positionReady = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const chapter = book.chapters[chapterIndex];
   const chapterCount = book.chapters.length;
   const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
   const chapterText = loadedChapter?.text || "";
   const bookCacheKey = `${book.title}:${book.chapters.length}:${bookPath}`;
+
+  function locator() { return JSON.stringify({ chapterId: chapter?.id, scroll: scrollFraction.current }); }
+  function fraction() { return chapterCount ? (chapterIndex + scrollFraction.current) / chapterCount : 0; }
+  function savePosition() {
+    if (!chapter || !positionReady.current) return;
+    void invoke("save_reading_progress", { libraryId, locator: locator(), fraction: fraction() })
+      .catch((reason) => setChapterError(`进度保存失败：${String(reason)}`));
+  }
+  function changeChapter(index: number) {
+    savePosition();
+    positionReady.current = false;
+    pendingScroll.current = 0;
+    scrollFraction.current = 0;
+    onChapterChange(index);
+  }
+  useEffect(() => {
+    if (!loadedChapter || !bodyRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      const body = bodyRef.current;
+      if (!body) return;
+      body.scrollTop = pendingScroll.current * Math.max(0, body.scrollHeight - body.clientHeight);
+      scrollFraction.current = pendingScroll.current;
+      pendingScroll.current = 0;
+      positionReady.current = true;
+      savePosition();
+    });
+    return () => { cancelAnimationFrame(frame); };
+  }, [chapter?.id, loadedChapter]);
+  useEffect(() => {
+    const flush = () => savePosition();
+    document.addEventListener("visibilitychange", flush);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      clearTimeout(saveTimer.current);
+      savePosition();
+      document.removeEventListener("visibilitychange", flush);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [libraryId, chapter?.id]);
 
   useEffect(() => {
     localStorage.setItem("luminashelf.reader.preferences", JSON.stringify(preferences));
@@ -289,6 +340,21 @@ export default function ReaderView({
             <small>{chapterLabel}</small>
           </div>
           <div className="reader-toolbar-actions">
+            <ReaderBookmarks libraryId={libraryId} label={chapter.title} locator={locator} fraction={fraction}
+              onSelect={(bookmark) => {
+                const position = parseReaderPosition(bookmark.locator);
+                if (!position) return;
+                const index = book.chapters.findIndex((item) => item.id === position.chapterId);
+                if (index < 0) return;
+                if (index === chapterIndex && bodyRef.current) {
+                  bodyRef.current.scrollTop = position.scroll * Math.max(0, bodyRef.current.scrollHeight - bodyRef.current.clientHeight);
+                  scrollFraction.current = position.scroll;
+                  savePosition();
+                } else {
+                  changeChapter(index);
+                  pendingScroll.current = position.scroll;
+                }
+              }} />
             <button
               className="ghost-button reader-icon-button"
               onClick={() => setSearchOpen((open) => !open)}
@@ -316,7 +382,7 @@ export default function ReaderView({
                     className={index === chapterIndex ? "active" : ""}
                     disabled={chapterLoading}
                     onClick={() => {
-                      onChapterChange(index);
+                      changeChapter(index);
                       setTocOpen(false);
                     }}
                   >
@@ -353,18 +419,27 @@ export default function ReaderView({
             </div>
           ) : null}
 
-          <div className="reader-body">
+          <div className="reader-body" ref={bodyRef} onScroll={() => {
+            const body = bodyRef.current;
+            if (!body || !positionReady.current) return;
+            scrollFraction.current = body.scrollHeight > body.clientHeight
+              ? body.scrollTop / (body.scrollHeight - body.clientHeight) : 0;
+            clearTimeout(saveTimer.current);
+            saveTimer.current = setTimeout(savePosition, 250);
+          }}>
             <article>
               <h2>{chapter.title}</h2>
               <div
-                className="reader-text"
+                className={`reader-text ${loadedChapter?.html && !searchQuery.trim() ? "reader-formatted" : ""}`}
                 style={{ fontSize: `${preferences.fontSize}px`, lineHeight: preferences.lineHeight }}
               >
                 {chapterLoading
                   ? "正在加载本章…"
                   : chapterError
                     ? `章节加载失败：${chapterError}`
-                    : renderChapterText()}
+                    : loadedChapter?.html && !searchQuery.trim()
+                      ? <div dangerouslySetInnerHTML={{ __html: loadedChapter.html }} />
+                      : renderChapterText()}
               </div>
             </article>
           </div>
@@ -372,7 +447,7 @@ export default function ReaderView({
 
         <footer className="reader-footer reader-footer-expanded">
           <div className="reader-position">
-            <small>{Math.round(progressFraction * 100)}% · 进度自动保存到本地 SQLite</small>
+            <small>{Math.round(progressFraction * 100)}% · 阅读位置自动保存</small>
             <div className="reader-progress-track"><i style={{ width: `${progressFraction * 100}%` }} /></div>
           </div>
 
@@ -403,8 +478,8 @@ export default function ReaderView({
           </div>
 
           <div className="reader-nav-actions">
-            <button className="ghost-button" disabled={chapterLoading || chapterIndex === 0} onClick={() => onChapterChange(chapterIndex - 1)}>上一章</button>
-            <button className="primary-button" disabled={chapterLoading || chapterIndex >= chapterCount - 1} onClick={() => onChapterChange(chapterIndex + 1)}>下一章</button>
+            <button className="ghost-button" disabled={chapterLoading || chapterIndex === 0} onClick={() => changeChapter(chapterIndex - 1)}>上一章</button>
+            <button className="primary-button" disabled={chapterLoading || chapterIndex >= chapterCount - 1} onClick={() => changeChapter(chapterIndex + 1)}>下一章</button>
           </div>
         </footer>
       </section>

@@ -48,6 +48,8 @@ pub struct ReaderChapter {
     pub id: String,
     pub title: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +136,7 @@ fn open_txt(path: &Path) -> Result<ReaderBook> {
             id: "text".to_string(),
             title: file_title(path),
             text,
+            html: None,
         }],
     })
 }
@@ -165,6 +168,7 @@ fn open_epub(path: &Path) -> Result<ReaderBook> {
             id: idref.clone(),
             title: chapter_title,
             text,
+            html: formatted_chapter(&mut archive, &entry, &html),
         });
     }
     if chapters.is_empty() {
@@ -203,7 +207,12 @@ fn open_epub_chapter(path: &Path, chapter_id: &str) -> Result<ReaderChapter> {
     let entry = normalize_zip_path(&package_dir.join(&item.href));
     let html = read_zip_text(&mut archive, &entry)?;
     let text = html_to_text(&html);
-    if text.trim().is_empty() {
+    let formatted = formatted_chapter(&mut archive, &entry, &html);
+    if text.trim().is_empty()
+        && !formatted
+            .as_ref()
+            .is_some_and(|html| html.contains("<img "))
+    {
         return Err(anyhow!("EPUB chapter does not contain readable text"));
     }
     let toc_titles = load_toc_titles(&mut archive, &package_dir, &package_data);
@@ -216,6 +225,7 @@ fn open_epub_chapter(path: &Path, chapter_id: &str) -> Result<ReaderChapter> {
         id: chapter_id.to_string(),
         title,
         text,
+        html: formatted,
     })
 }
 
@@ -231,6 +241,162 @@ fn load_epub_package(path: &Path) -> Result<(ZipArchive<File>, PathBuf, PackageD
         .unwrap_or_default();
     let package_data = parse_package(&package)?;
     Ok((archive, package_dir, package_data))
+}
+
+// A small structural renderer rather than arbitrary author HTML/CSS. EPUB content
+// is untrusted: scripts, event attributes, external URLs and style rules never reach
+// the WebView. Local raster images are bounded and embedded as non-executable data.
+fn formatted_chapter<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    entry: &str,
+    html: &str,
+) -> Option<String> {
+    let document = roxmltree::Document::parse(html).ok()?;
+    let body = document
+        .descendants()
+        .find(|node| node.has_tag_name("body"))?;
+    let directory = Path::new(entry).parent().unwrap_or(Path::new(""));
+    let mut budget = 8 * 1024 * 1024_u64;
+    let mut output = String::new();
+    render_safe_node(body, archive, directory, &mut budget, &mut output, 0);
+    Some(output)
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn render_safe_node<R: Read + Seek>(
+    node: roxmltree::Node<'_, '_>,
+    archive: &mut ZipArchive<R>,
+    directory: &Path,
+    image_budget: &mut u64,
+    output: &mut String,
+    depth: usize,
+) {
+    if depth > 64 {
+        return;
+    }
+    if node.is_text() {
+        output.push_str(&escape_html(node.text().unwrap_or("")));
+        return;
+    }
+    if !node.is_element() {
+        return;
+    }
+    let tag = node.tag_name().name().to_ascii_lowercase();
+    if matches!(
+        tag.as_str(),
+        "script"
+            | "style"
+            | "iframe"
+            | "object"
+            | "embed"
+            | "form"
+            | "svg"
+            | "head"
+            | "template"
+            | "video"
+            | "audio"
+    ) {
+        return;
+    }
+    if tag == "img" {
+        if let Some(src) = node
+            .attribute("src")
+            .filter(|src| !src.contains(':') && !src.starts_with("//"))
+        {
+            let name = normalize_zip_path(&directory.join(normalize_toc_href(src)));
+            if let Ok(mut file) = archive.by_name(&name) {
+                let size = file.size();
+                if size <= 4 * 1024 * 1024 && size <= *image_budget {
+                    let mut bytes = Vec::new();
+                    if file.read_to_end(&mut bytes).is_ok() {
+                        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                            Some("image/png")
+                        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+                            Some("image/jpeg")
+                        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+                            Some("image/gif")
+                        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+                            Some("image/webp")
+                        } else {
+                            None
+                        };
+                        if let Some(mime) = mime {
+                            use base64::Engine;
+                            *image_budget -= size;
+                            output.push_str(&format!(
+                                "<img loading=\"lazy\" alt=\"{}\" src=\"data:{mime};base64,{}\" />",
+                                escape_html(node.attribute("alt").unwrap_or("")),
+                                base64::engine::general_purpose::STANDARD.encode(bytes)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    let allowed = matches!(
+        tag.as_str(),
+        "p" | "div"
+            | "span"
+            | "section"
+            | "article"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "strong"
+            | "b"
+            | "em"
+            | "i"
+            | "u"
+            | "s"
+            | "blockquote"
+            | "pre"
+            | "code"
+            | "ul"
+            | "ol"
+            | "li"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tr"
+            | "td"
+            | "th"
+            | "caption"
+            | "figure"
+            | "figcaption"
+            | "sup"
+            | "sub"
+            | "ruby"
+            | "rt"
+            | "rp"
+            | "br"
+            | "hr"
+    );
+    if allowed {
+        output.push('<');
+        output.push_str(&tag);
+        output.push('>');
+    }
+    for child in node.children() {
+        render_safe_node(child, archive, directory, image_budget, output, depth + 1);
+    }
+    if allowed && tag != "br" && tag != "hr" {
+        output.push_str("</");
+        output.push_str(&tag);
+        output.push('>');
+    }
 }
 
 fn epub_chapter_metadata(

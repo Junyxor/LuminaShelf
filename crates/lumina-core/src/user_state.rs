@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Bookmark {
+    pub id: String,
+    pub library_id: String,
+    pub label: String,
+    pub locator: String,
+    pub fraction: f64,
+    pub created_at_unix_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountProfile {

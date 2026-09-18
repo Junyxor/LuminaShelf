@@ -51,7 +51,14 @@ describe("library and download workflows across the IPC boundary", () => {
   it("restores a paused task, resumes it, and adds the completed book to the existing library", async () => {
     const original = bridge.invoke.getMockImplementation()!;
     bridge.invoke.mockImplementation(async (command: string, args: unknown) => {
-      if (command === "download_book") return { path: "/books/download.txt", item: { ...book, id: "download", title: "待下载的书", path: "/books/download.txt" } };
+      if (command === "enqueue_download") {
+        books = [book, { ...book, id: "download", title: "待下载的书", path: "/books/download.txt" }];
+        queueMicrotask(() => {
+          bridge.listeners.get("download-task-updated")?.({ payload: { ...task, state: "completed" } });
+          bridge.listeners.get("library-updated")?.({ payload: {} });
+        });
+        return { ...task, state: "queued" };
+      }
       return original(command, args);
     });
     render(<App />);

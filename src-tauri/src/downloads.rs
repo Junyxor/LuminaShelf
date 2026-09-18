@@ -1,6 +1,6 @@
 use super::{
-    download_control::{ControlledDownload, TransferControl},
-    resumable_destination, AppState,
+    download_control::{ControlledDownload, TransferControl, TransferLease},
+    native_downloads, resumable_destination, AppState,
 };
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, DownloadState, SegmentedDownloader},
@@ -25,6 +25,7 @@ fn publish(app: &AppHandle, state: &AppState, task: &PersistedDownloadTask) -> R
         .upsert_download_task(&task)
         .map_err(|error| error.to_string())?;
     let _ = app.emit("download-task-updated", &task);
+    native_downloads::update(app, &task);
     Ok(())
 }
 
@@ -94,29 +95,28 @@ pub(super) async fn cancel_download(
     Ok(false)
 }
 
-#[tauri::command]
-pub(super) async fn download_book(
-    app: AppHandle,
-    state: State<'_, AppState>,
+fn prepare_download(
+    app: &AppHandle,
+    state: &AppState,
     provider_id: String,
     book_id: String,
     title: String,
     format: BookFormat,
     download_dir: Option<String>,
-) -> Result<DownloadReceipt, String> {
+) -> Result<(PersistedDownloadTask, TransferLease), String> {
     let task_id = format!("{provider_id}:{book_id}:{}", format.extension());
     // Claim before acquiring a URL or changing persisted state, including connecting.
-    let mut lease = state.transfers.begin(&task_id)?;
+    let lease = state.transfers.begin(&task_id)?;
     let existing = state
         .state_store
         .list_download_tasks()
         .map_err(|error| error.to_string())?
         .into_iter()
         .find(|task| task.id == task_id);
-    let mut task = match existing {
+    let task = match existing {
         Some(task) => task,
         None => {
-            let directory = destination_dir(&app, download_dir)?;
+            let directory = destination_dir(app, download_dir)?;
             let mut destination = resumable_destination(
                 &directory,
                 &title,
@@ -143,6 +143,101 @@ pub(super) async fn download_book(
             )
         }
     };
+    Ok((task, lease))
+}
+
+#[tauri::command]
+pub(super) async fn enqueue_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider_id: String,
+    book_id: String,
+    title: String,
+    format: BookFormat,
+    download_dir: Option<String>,
+) -> Result<PersistedDownloadTask, String> {
+    let (mut task, lease) = prepare_download(
+        &app,
+        &state,
+        provider_id,
+        book_id,
+        title,
+        format,
+        download_dir,
+    )?;
+    task.state = DownloadState::Queued;
+    task.error = None;
+    native_downloads::start(&app, &task).await?;
+    if let Err(error) = publish(&app, &state, &task) {
+        task.state = DownloadState::Failed;
+        native_downloads::update(&app, &task);
+        return Err(error);
+    }
+    let snapshot = task.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        if let Err(error) = execute_download(&app, &state, task.clone(), lease).await {
+            if let Ok(tasks) = state.state_store.list_download_tasks() {
+                if let Some(mut latest) = tasks.into_iter().find(|item| item.id == task.id) {
+                    if latest.state.is_active() {
+                        latest.state = DownloadState::Failed;
+                        latest.error = Some(error);
+                        let _ = publish(&app, &state, &latest);
+                    }
+                }
+            }
+        }
+    });
+    Ok(snapshot)
+}
+
+// Retained for existing callers; the UI uses enqueue_download so its lifetime
+// and Android activity lifecycle cannot cancel a transfer.
+#[tauri::command]
+pub(super) async fn download_book(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider_id: String,
+    book_id: String,
+    title: String,
+    format: BookFormat,
+    download_dir: Option<String>,
+) -> Result<DownloadReceipt, String> {
+    let (task, lease) = prepare_download(
+        &app,
+        &state,
+        provider_id,
+        book_id,
+        title,
+        format,
+        download_dir,
+    )?;
+    native_downloads::start(&app, &task).await?;
+    execute_download(&app, &state, task, lease).await
+}
+
+struct ServiceLease {
+    app: AppHandle,
+    task: PersistedDownloadTask,
+}
+impl Drop for ServiceLease {
+    fn drop(&mut self) {
+        self.task.state = DownloadState::Paused;
+        native_downloads::update(&self.app, &self.task);
+    }
+}
+
+async fn execute_download(
+    app: &AppHandle,
+    state: &AppState,
+    mut task: PersistedDownloadTask,
+    mut lease: TransferLease,
+) -> Result<DownloadReceipt, String> {
+    let _service = ServiceLease {
+        app: app.clone(),
+        task: task.clone(),
+    };
+    let task_id = task.id.clone();
     let staging = PathBuf::from(format!("{}.lumina-download", task.destination.display()));
     let legacy_manifest = PathBuf::from(format!("{}.lumina-part.json", task.destination.display()));
     let recovered_final = !staging.exists()
@@ -165,7 +260,7 @@ pub(super) async fn download_book(
             .upsert_library_item(&item)
             .map_err(|error| error.to_string())?;
         task.state = DownloadState::Completed;
-        publish(&app, &state, &task)?;
+        publish(app, state, &task)?;
         let _ = app.emit("library-updated", ());
         return Ok(DownloadReceipt {
             path: task.destination,
@@ -174,17 +269,14 @@ pub(super) async fn download_book(
     }
     task.state = DownloadState::Connecting;
     task.error = None;
-    publish(&app, &state, &task)?;
+    publish(app, state, &task)?;
     let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress {
         downloaded_bytes: task.downloaded_bytes,
         total_bytes: task.total_bytes,
     });
     let transfer = async {
-        let url = state
-            .providers
-            .acquisition_url(&task.provider_id, &task.book_id, task.format)
-            .await?;
-        let headers = state.providers.download_headers(&task.provider_id).await?;
+        let _slot = state.download_slots.acquire().await?;
+        let (url, headers) = acquisition_request(state, &task).await?;
         let downloader =
             SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())?;
         downloader
@@ -207,7 +299,7 @@ pub(super) async fn download_book(
                             snapshot.downloaded_bytes = progress.downloaded_bytes;
                             snapshot.total_bytes = progress.total_bytes;
                             // Keep cleanup reachable even if persistence temporarily fails.
-                            let _ = publish(&app, &state, &snapshot);
+                            let _ = publish(app, state, &snapshot);
                             last_persisted = std::time::Instant::now();
                         }
                     }
@@ -229,7 +321,7 @@ pub(super) async fn download_book(
             } else {
                 DownloadState::Cancelled
             };
-            publish(&app, &state, &task)?;
+            publish(app, state, &task)?;
             return Err(if paused {
                 "__LUMINA_PAUSED__"
             } else {
@@ -241,7 +333,7 @@ pub(super) async fn download_book(
             task.state = DownloadState::Failed;
             // Network errors may include temporary URLs. Do not persist their query strings.
             task.error = Some("下载失败，请检查网络和账户后重试。".into());
-            publish(&app, &state, &task)?;
+            publish(app, state, &task)?;
             let _ = error;
             return Err(task.error.unwrap());
         }
@@ -249,7 +341,7 @@ pub(super) async fn download_book(
     }
     // Finalization is deliberately outside the cancellable transfer.
     task.state = DownloadState::Verifying;
-    publish(&app, &state, &task)?;
+    publish(app, state, &task)?;
     let finalized = async {
         let publish_staging = staging.clone();
         let publish_destination = task.destination.clone();
@@ -272,7 +364,7 @@ pub(super) async fn download_book(
             task.state = DownloadState::Completed;
             task.downloaded_bytes = item.size_bytes;
             task.total_bytes = Some(item.size_bytes);
-            publish(&app, &state, &task)?;
+            publish(app, state, &task)?;
             let _ = app.emit("library-updated", ());
             Ok(DownloadReceipt {
                 path: task.destination,
@@ -282,10 +374,60 @@ pub(super) async fn download_book(
         Err(error) => {
             task.state = DownloadState::Failed;
             task.error = Some(error.clone());
-            publish(&app, &state, &task)?;
+            publish(app, state, &task)?;
             Err(error)
         }
     }
+}
+
+async fn acquisition_request(
+    state: &AppState,
+    task: &PersistedDownloadTask,
+) -> anyhow::Result<(url::Url, reqwest::header::HeaderMap)> {
+    #[cfg(debug_assertions)]
+    if task.provider_id == "smoke" {
+        return Ok((
+            local_smoke_url(&task.book_id)?,
+            reqwest::header::HeaderMap::new(),
+        ));
+    }
+    Ok((
+        state
+            .providers
+            .acquisition_url(&task.provider_id, &task.book_id, task.format)
+            .await?,
+        state.providers.download_headers(&task.provider_id).await?,
+    ))
+}
+
+#[cfg(debug_assertions)]
+fn local_smoke_url(value: &str) -> anyhow::Result<url::Url> {
+    let url = url::Url::parse(value)?;
+    anyhow::ensure!(
+        url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "10.0.2.2")),
+        "smoke downloads require an emulator-local HTTP server"
+    );
+    Ok(url)
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub(super) async fn debug_enqueue_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<PersistedDownloadTask, String> {
+    let url = local_smoke_url(&url).map_err(|error| error.to_string())?;
+    enqueue_download(
+        app,
+        state,
+        "smoke".into(),
+        url.to_string(),
+        "后台下载测试".into(),
+        BookFormat::Txt,
+        None,
+    )
+    .await
 }
 
 fn inspect_download(task: &PersistedDownloadTask) -> Result<LibraryItem, String> {

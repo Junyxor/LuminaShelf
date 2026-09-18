@@ -1,6 +1,9 @@
 mod download_control;
 mod downloads;
+mod library_backup;
 mod library_import;
+mod library_manage;
+mod native_downloads;
 mod pdf;
 mod reader_bridge;
 mod session_vault;
@@ -41,6 +44,7 @@ struct AppState {
     state_store: StateStore,
     managed_library_dir: PathBuf,
     transfers: TransferRegistry,
+    download_slots: tokio::sync::Semaphore,
     zlibrary: Arc<ZLibraryProvider>,
     zlibrary_probe: Client,
     zlibrary_config: RwLock<ZLibraryConfig>,
@@ -108,6 +112,7 @@ impl AppState {
             state_store,
             managed_library_dir: config_dir.join("library"),
             transfers: TransferRegistry::default(),
+            download_slots: tokio::sync::Semaphore::new(3),
             zlibrary,
             zlibrary_probe,
             zlibrary_config: RwLock::new(zlibrary_config),
@@ -610,7 +615,7 @@ fn sanitize_filename(value: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(native_downloads::init());
     #[cfg(not(target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "android")]
@@ -650,6 +655,15 @@ pub fn run() {
             search_books,
             book_details,
             library_items,
+            library_manage::bookmarks,
+            library_manage::add_bookmark,
+            library_manage::remove_bookmark,
+            library_manage::edit_library_item,
+            library_manage::remove_library_item,
+            library_backup::export_library_book,
+            library_backup::share_library_book,
+            library_backup::export_library_backup,
+            library_backup::restore_library_backup,
             library_import::import_library_files,
             library_import::choose_library_folder,
             scan_library,
@@ -659,6 +673,9 @@ pub fn run() {
             reading_progress,
             save_reading_progress,
             downloads::download_book,
+            downloads::enqueue_download,
+            #[cfg(debug_assertions)]
+            downloads::debug_enqueue_download,
             pdf::read_pdf_bytes
         ])
         .run(tauri::generate_context!())

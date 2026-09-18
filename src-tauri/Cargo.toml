@@ -16,6 +16,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+anyhow.workspace = true
 lumina-core = { path = "../crates/lumina-core" }
 reqwest.workspace = true
 serde.workspace = true

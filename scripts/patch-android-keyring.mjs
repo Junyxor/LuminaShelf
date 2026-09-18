@@ -66,4 +66,24 @@ if (!source.includes("initNdkContext(this.applicationContext)")) {
 }
 
 await fs.writeFile(activityPath, source);
+for (const name of ["DownloadService.kt", "DownloadRuntimePlugin.kt"]) {
+  await fs.copyFile(path.resolve("android", name), path.join(path.dirname(activityPath), name));
+}
+const manifestPath = path.resolve("src-tauri/gen/android/app/src/main/AndroidManifest.xml");
+let manifest = await fs.readFile(manifestPath, "utf8");
+for (const permission of ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "POST_NOTIFICATIONS", "WAKE_LOCK"]) {
+  if (!manifest.includes(`android.permission.${permission}"`)) {
+    manifest = manifest.replace("<application", `<uses-permission android:name="android.permission.${permission}" />\n    <application`);
+  }
+}
+if (!manifest.includes('android:name=".DownloadService"')) {
+  manifest = manifest.replace("</application>", '<service android:name=".DownloadService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />\n    </application>');
+}
+await fs.writeFile(manifestPath, manifest);
+await fs.copyFile(path.resolve("android/proguard-lumina.pro"), path.resolve("src-tauri/gen/android/app/proguard-lumina.pro"));
+// These are regenerated build inputs, kept in sync with the application version.
+const appConfig = JSON.parse(await fs.readFile("src-tauri/tauri.conf.json", "utf8"));
+const [major, minor, patch] = appConfig.version.split(".").map(Number);
+await fs.writeFile("src-tauri/gen/android/app/tauri.properties",
+  `tauri.android.versionName=${appConfig.version}\ntauri.android.versionCode=${major * 1000000 + minor * 1000 + patch}\n`);
 console.log(`Android secure-storage activity patch ready: ${path.relative(process.cwd(), activityPath)}`);

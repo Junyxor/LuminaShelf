@@ -63,13 +63,14 @@ function pdf() {
 
 export async function createFixtures(directory) {
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, "Lumina TXT.txt"), "Offline reading on Android.\n\nA quiet place to read.");
+  await writeFile(path.join(directory, "Lumina TXT.txt"), "Offline reading on Android.\n\n" + Array.from({ length: 100 }, (_, index) => `Paragraph ${index + 1}: A quiet place to read, remember, and continue the story.\n\n`).join(""));
   await writeFile(path.join(directory, "Lumina PDF.pdf"), pdf());
   await writeFile(path.join(directory, "Lumina EPUB.epub"), zip([
     ["mimetype", "application/epub+zip"],
     ["META-INF/container.xml", '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'],
     ["OEBPS/content.opf", '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Lumina EPUB</dc:title><dc:identifier id="id">lumina-smoke</dc:identifier><dc:language>en</dc:language></metadata><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/><itemref idref="b"/></spine></package>'],
-    ["OEBPS/a.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>First chapter</h1><p>Android EPUB import works.</p></body></html>'],
+    ["OEBPS/a.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>First chapter</h1><p>Android <strong>EPUB</strong> import works.</p><img src="image.png" alt="Local illustration"/><script>window.epubAttack = true;</script></body></html>'],
+    ["OEBPS/image.png", Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64")],
     ["OEBPS/b.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head><body><h1>Second chapter</h1><p>Continue the story after restarting.</p></body></html>'],
     ["OEBPS/nav.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="a.xhtml">First chapter</a></li><li><a href="b.xhtml">Second chapter</a></li></ol></nav></body></html>'],
   ]));

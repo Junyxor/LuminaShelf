@@ -313,6 +313,23 @@ select option { background: #0a1220; }
 .library-scan { margin-top: 12px; }
 .library-toolbar { flex-wrap: wrap; }
 .library-toolbar input { min-width: 160px; }
+.library-card-actions { flex-wrap: wrap; }
+.library-manage label { display: grid; gap: 10px; margin: 20px 0; }
+.library-manage input { width: 100%; }
+.library-manage input[type=checkbox] { width: auto; }
+.library-manage .search-hint { overflow-wrap: anywhere; }
+.library-manage > .danger { margin-top: 24px; }
+.remove-confirm { margin-top: 24px; padding: 16px; border: 1px solid var(--md-outline); border-radius: 12px; }
+.bookmark-widget { position: relative; }
+.bookmark-panel { position: fixed; z-index: 90; top: max(85px, env(safe-area-inset-top)); right: 16px; width: min(360px, calc(100vw - 32px)); max-height: 60vh; overflow: auto; background: var(--md-surface); color: var(--md-on-surface); border: 1px solid var(--md-outline-variant); border-radius: 16px; padding: 16px; box-shadow: 0 8px 30px #0004; }
+.bookmark-add { display: flex; flex-wrap: wrap; gap: 8px; }
+.bookmark-add input { width: 100%; }
+.bookmark-row { display: flex; gap: 8px; border-top: 1px solid var(--md-outline-variant); margin-top: 10px; padding-top: 10px; }
+.bookmark-row button { color: inherit; background: transparent; border: none; padding: 8px; }
+.bookmark-row button:first-child { display: flex; justify-content: space-between; gap: 12px; flex: 1; text-align: left; }
+.bookmark-row span { overflow-wrap: anywhere; }
+.recent-searches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.download-format-choice { display: grid; gap: 8px; margin: 18px 0; }
 .account-placeholder i { background: #8497ad; box-shadow: none; }
 
 .detail-backdrop { position: fixed; z-index: 80; inset: 0; display: flex; justify-content: flex-end; background: rgba(1,6,12,.52); backdrop-filter: blur(8px); }

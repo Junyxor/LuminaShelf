@@ -2,7 +2,7 @@ use crate::{
     download::DownloadState,
     library::{now_unix_ms, LibraryFormat, LibraryItem},
     provider::BookFormat,
-    user_state::{AccountProfile, FavoriteBook, ReadingProgress},
+    user_state::{AccountProfile, Bookmark, FavoriteBook, ReadingProgress},
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -127,6 +127,15 @@ impl StateStore {
               fraction REAL NOT NULL DEFAULT 0,
               updated_at_unix_ms INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS bookmarks (
+              id TEXT PRIMARY KEY,
+              library_id TEXT NOT NULL,
+              label TEXT NOT NULL,
+              locator TEXT NOT NULL,
+              fraction REAL NOT NULL,
+              created_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS bookmarks_library_idx ON bookmarks(library_id);
 
             CREATE TABLE IF NOT EXISTS library_items (
               id TEXT PRIMARY KEY,
@@ -332,6 +341,15 @@ impl StateStore {
     }
 
     pub fn upsert_library_items(&self, items: &[LibraryItem]) -> Result<()> {
+        self.restore_library(items, &[], &[])
+    }
+
+    pub fn restore_library(
+        &self,
+        items: &[LibraryItem],
+        progress: &[ReadingProgress],
+        bookmarks: &[Bookmark],
+    ) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let updated_at = now_unix_ms();
@@ -367,6 +385,14 @@ impl StateStore {
                     updated_at,
                 ],
             )?;
+        }
+        for position in progress {
+            tx.execute("INSERT OR REPLACE INTO reading_progress(library_id, locator, fraction, updated_at_unix_ms) VALUES(?1,?2,?3,?4)",
+                params![position.library_id, position.locator, position.fraction.clamp(0.0,1.0), position.updated_at_unix_ms])?;
+        }
+        for bookmark in bookmarks {
+            tx.execute("INSERT OR REPLACE INTO bookmarks(id,library_id,label,locator,fraction,created_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![bookmark.id,bookmark.library_id,bookmark.label,bookmark.locator,bookmark.fraction.clamp(0.0,1.0),bookmark.created_at_unix_ms])?;
         }
         tx.commit()?;
         Ok(())
@@ -441,6 +467,60 @@ impl StateStore {
             [library_id],
             |row| Ok(ReadingProgress { library_id: row.get(0)?, locator: row.get(1)?, fraction: row.get(2)?, updated_at_unix_ms: row.get(3)? }),
         ).optional().map_err(Into::into)
+    }
+
+    pub fn library_item(&self, id: &str) -> Result<Option<LibraryItem>> {
+        Ok(self
+            .list_library_items()?
+            .into_iter()
+            .find(|item| item.id == id))
+    }
+
+    pub fn remove_library_item(&self, id: &str) -> Result<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM bookmarks WHERE library_id=?1", [id])?;
+        tx.execute("DELETE FROM reading_progress WHERE library_id=?1", [id])?;
+        let removed = tx.execute("DELETE FROM library_items WHERE id=?1", [id])? == 1;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    pub fn upsert_bookmark(&self, bookmark: &Bookmark) -> Result<()> {
+        anyhow::ensure!(
+            self.library_item(&bookmark.library_id)?.is_some(),
+            "book is not in the library"
+        );
+        self.conn()?.execute(
+            "INSERT INTO bookmarks(id, library_id, label, locator, fraction, created_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(id) DO UPDATE SET label=excluded.label, locator=excluded.locator, fraction=excluded.fraction",
+            params![bookmark.id, bookmark.library_id, bookmark.label, bookmark.locator,
+                bookmark.fraction.clamp(0.0, 1.0), bookmark.created_at_unix_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_bookmarks(&self, library_id: &str) -> Result<Vec<Bookmark>> {
+        let conn = self.conn()?;
+        let mut query = conn.prepare("SELECT id, library_id, label, locator, fraction, created_at_unix_ms FROM bookmarks WHERE library_id=?1 ORDER BY fraction, created_at_unix_ms")?;
+        let rows = query.query_map([library_id], |row| {
+            Ok(Bookmark {
+                id: row.get(0)?,
+                library_id: row.get(1)?,
+                label: row.get(2)?,
+                locator: row.get(3)?,
+                fraction: row.get(4)?,
+                created_at_unix_ms: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn remove_bookmark(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn()?
+            .execute("DELETE FROM bookmarks WHERE id=?1", [id])?
+            == 1)
     }
 
     pub fn upsert_download_task(&self, task: &PersistedDownloadTask) -> Result<()> {

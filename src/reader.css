@@ -46,6 +46,15 @@
   --reader-border: rgba(92, 72, 45, 0.14);
 }
 
+.reader-formatted { white-space: normal; }
+.reader-formatted p { margin: .8em 0; text-indent: 1.5em; }
+.reader-formatted h1, .reader-formatted h2, .reader-formatted h3 { color: var(--reader-text); line-height: 1.4; }
+.reader-formatted img { display: block; max-width: 100%; max-height: 75vh; height: auto; object-fit: contain; margin: 1em auto; }
+.reader-formatted blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--reader-border); }
+.reader-formatted table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.reader-formatted td, .reader-formatted th { border: 1px solid var(--reader-border); padding: .4em; }
+.reader-formatted pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .reader-theme-dark {
   --reader-bg: #171a20;
   --reader-panel: rgba(28, 32, 40, 0.96);

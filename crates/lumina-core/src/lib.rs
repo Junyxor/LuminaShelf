@@ -3,6 +3,7 @@
 //! Network, provider, download, reading and persistent user state live here so UI
 //! shells remain thin and replaceable.
 
+pub mod backup;
 pub mod download;
 pub mod library;
 pub mod mirror;
@@ -28,4 +29,4 @@ pub use reader::{
     ReaderChapter, ReaderChapterMetadata,
 };
 pub use storage::{PersistedDownloadTask, StateStore};
-pub use user_state::{AccountProfile, FavoriteBook, ReadingProgress};
+pub use user_state::{AccountProfile, Bookmark, FavoriteBook, ReadingProgress};

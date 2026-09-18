@@ -6,6 +6,7 @@ import type {
 } from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import "./pdf.css";
+import ReaderBookmarks from "./ReaderBookmarks";
 
 const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
 const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
@@ -238,6 +239,8 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
             <small>{numPages ? `第 ${pageNumber} / ${numPages} 页` : "正在载入 PDF…"}</small>
           </div>
           <div className="pdf-zoom-controls">
+            <ReaderBookmarks libraryId={libraryId} label={`第 ${pageNumber} 页`} locator={() => `page:${pageNumber}`} fraction={() => numPages ? pageNumber / numPages : 0}
+              onSelect={(bookmark) => { if (bookmark.locator.startsWith("page:")) setPageNumber(Math.min(numPages || 1, Math.max(1, Number(bookmark.locator.slice(5)) || 1))); }} />
             <button onClick={() => setZoom((value) => Math.max(0.6, Math.round((value - 0.1) * 10) / 10))}>−</button>
             <strong>{Math.round(zoom * 100)}%</strong>
             <button onClick={() => setZoom((value) => Math.min(2.5, Math.round((value + 0.1) * 10) / 10))}>+</button>

@@ -13,3 +13,4 @@ artifacts/
 .android-tools/
 .android-avd/
 .gradle/
+.signing/

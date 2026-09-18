@@ -1,9 +1,11 @@
 import { expect } from "@playwright/test";
 import { _android as android } from "playwright";
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createFixtures } from "./smoke-fixtures.mjs";
+import { testBackground } from "./smoke-background.mjs";
+import { testLibraryManagement } from "./smoke-library.mjs";
 
 const serial = process.env.ANDROID_SERIAL || "emulator-5556";
 const sdk = process.env.ANDROID_HOME || path.resolve(".android-sdk");
@@ -13,6 +15,7 @@ const output = path.resolve("artifacts/android/smoke");
 const fixtures = path.join(output, "fixtures");
 const checks = [];
 const errors = [];
+const version = JSON.parse(await readFile("package.json", "utf8")).version;
 let device, page;
 await mkdir(output, { recursive: true });
 await createFixtures(fixtures);
@@ -33,16 +36,17 @@ async function launch() {
   const webview = await device.webView({ pkg: app });
   page = await webview.page();
   page.on("pageerror", (error) => errors.push(error.message));
-  await expect(page.locator(".version-chip")).toHaveText("v0.6.0", { timeout: 30000 });
+  await expect(page.locator(".version-chip")).toHaveText("v" + version, { timeout: 30000 });
   await expect.poll(() => page.evaluate(() => window.__TAURI_INTERNALS__.invoke("core_status"))).toMatchObject({ platform: "android", rustCore: true });
 }
 async function restart() {
   await page?.context().close().catch(() => {});
   adb("shell", "am", "force-stop", app);
+  adb("shell", "pm", "grant", app, "android.permission.POST_NOTIFICATIONS");
   await launch();
 }
 async function screenshot(name) {
-  const png = execFileSync(adbPath, ["-s", serial, "exec-out", "screencap", "-p"], { windowsHide: true });
+  const png = execFileSync(adbPath, ["-s", serial, "exec-out", "screencap", "-p"], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   await writeFile(path.join(output, name + ".png"), png);
 }
 function layout() {
@@ -72,6 +76,7 @@ async function importBook(name) {
 
 try {
   adb("shell", "am", "force-stop", app);
+  adb("shell", "pm", "grant", app, "android.permission.POST_NOTIFICATIONS");
   adb("shell", "input", "keyevent", "82");
   adb("shell", "mkdir", "-p", "/sdcard/Download");
   for (const name of ["Lumina TXT.txt", "Lumina EPUB.epub", "Lumina PDF.pdf"]) {
@@ -80,6 +85,10 @@ try {
   await launch();
   await expect(page.getByRole("alert")).toHaveCount(0);
   checks.push("Android native IPC startup and secure-session bootstrap");
+  if (process.argv.includes("--background")) {
+    await testBackground({ page, adb, tapNode, screenshot, output });
+    checks.push("Foreground service, lock-screen transfer, notification pause and HTTP resume");
+  }
   await page.getByRole("button", { name: "书库", exact: true }).last().click();
   await expect(page.getByRole("textbox", { name: "书库目录" })).toHaveCount(0);
   for (const name of ["Lumina TXT.txt", "Lumina EPUB.epub", "Lumina PDF.pdf"]) await importBook(name);
@@ -90,12 +99,29 @@ try {
   };
   await open("Lumina TXT");
   await expect(page.getByText(/Offline reading on Android/)).toBeVisible();
+  if (process.argv.includes("--library")) {
+    await page.locator(".reader-body").evaluate((body) => { body.scrollTop = (body.scrollHeight - body.clientHeight) * 0.6; });
+    await expect.poll(() => page.evaluate(async () => {
+      const item = (await window.__TAURI_INTERNALS__.invoke("library_items")).find((item) => item.title === "Lumina TXT");
+      const progress = await window.__TAURI_INTERNALS__.invoke("reading_progress", { libraryId: item.id });
+      return progress?.locator ? JSON.parse(progress.locator).scroll : 0;
+    })).toBeGreaterThan(0.5);
+    await page.getByRole("button", { name: "书签", exact: true }).click();
+    await page.getByRole("textbox", { name: "书签备注" }).fill("Android bookmark");
+    await page.getByRole("button", { name: "添加书签", exact: true }).click();
+    await expect(page.getByText("Android bookmark", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "书签", exact: true }).click();
+  }
   await screenshot("txt-reader");
   adb("shell", "input", "keyevent", "4");
   await expect(page.locator(".reader-backdrop")).toHaveCount(0);
   checks.push("TXT reader and Android Back");
   await open("Lumina EPUB");
-  await expect(page.getByText(/Android EPUB import works/)).toBeVisible();
+  await expect(page.locator(".reader-text")).toContainText("Android EPUB import works.");
+  if (process.argv.includes("--library")) {
+    await expect.poll(() => page.locator(".reader-formatted img").evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => window.epubAttack)).toBeUndefined();
+  }
   await page.getByRole("button", { name: /下一章/ }).click();
   await expect(page.getByText(/Continue the story after restarting/)).toBeVisible();
   await screenshot("epub-reader");
@@ -126,6 +152,16 @@ try {
   await open("Lumina PDF");
   await expect(page.locator(".pdf-title")).toContainText("第 2 / 2 页", { timeout: 30000 });
   checks.push("Library, EPUB chapter and PDF page persist after force-stop");
+  if (process.argv.includes("--library")) {
+    adb("shell", "input", "keyevent", "4");
+    await expect(page.locator(".pdf-backdrop")).toHaveCount(0);
+    await open("Lumina TXT");
+    await expect.poll(() => page.locator(".reader-body").evaluate((body) => body.scrollTop / (body.scrollHeight - body.clientHeight))).toBeGreaterThan(0.5);
+    adb("shell", "input", "keyevent", "4");
+    await expect(page.locator(".reader-backdrop")).toHaveCount(0);
+    await testLibraryManagement({ page, adb, tapNode, screenshot, output });
+    checks.push("Chapter scroll, bookmarks, metadata editing, deletion and SAF backup/restore");
+  }
   await restart();
   expect(await probe("verify")).toBe(false);
   checks.push("Android Keystore save/restore/delete across process restarts");

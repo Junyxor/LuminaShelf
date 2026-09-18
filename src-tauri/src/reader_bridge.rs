@@ -118,6 +118,7 @@ mod tests {
             id: id.to_string(),
             title: id.to_string(),
             text: id.to_string(),
+            html: None,
         }
     }
 
