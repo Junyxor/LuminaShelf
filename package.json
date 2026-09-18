@@ -8,9 +8,11 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "test:desktop": "node scripts/smoke-desktop.mjs",
+    "test:android": "node scripts/smoke-android.mjs",
     "tauri": "tauri",
     "android:init": "tauri android init && node scripts/patch-android-keyring.mjs",
     "android:prepare": "node scripts/patch-android-keyring.mjs",
+    "android:apk:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android-windows.ps1",
     "android:apk": "tauri android build --debug --apk --target aarch64"
   },
   "dependencies": {

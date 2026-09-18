@@ -63,8 +63,14 @@ pub struct ResolveResult {
 #[derive(Clone)]
 pub struct AppResolver {
     policy: Arc<RwLock<ResolverPolicy>>,
-    selected: Arc<RwLock<Arc<TokioResolver>>>,
-    system: Arc<TokioResolver>,
+    selected: Arc<RwLock<Arc<ResolverBackend>>>,
+    system: Arc<ResolverBackend>,
+}
+
+enum ResolverBackend {
+    #[cfg(target_os = "android")]
+    AndroidSystem,
+    Hickory(TokioResolver),
 }
 
 impl AppResolver {
@@ -74,7 +80,7 @@ impl AppResolver {
         let selected = if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
             system.clone()
         } else {
-            Arc::new(build_resolver(&policy)?)
+            Arc::new(ResolverBackend::Hickory(build_resolver(&policy)?))
         };
         Ok(Self {
             policy: Arc::new(RwLock::new(policy)),
@@ -98,7 +104,7 @@ impl AppResolver {
             let next = if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
                 self.system.clone()
             } else {
-                Arc::new(build_resolver(&policy)?)
+                Arc::new(ResolverBackend::Hickory(build_resolver(&policy)?))
             };
             *self.selected.write().await = next;
         }
@@ -199,16 +205,24 @@ fn resolver_transport_changed(before: &ResolverPolicy, after: &ResolverPolicy) -
         || before.doh_path != after.doh_path
 }
 
-fn build_system_resolver() -> Result<TokioResolver> {
+#[cfg(target_os = "android")]
+fn build_system_resolver() -> Result<ResolverBackend> {
+    // Android exposes per-network DNS through Bionic getaddrinfo; it has no
+    // /etc/resolv.conf. Reading a Unix resolver file makes fresh installs panic.
+    Ok(ResolverBackend::AndroidSystem)
+}
+
+#[cfg(not(target_os = "android"))]
+fn build_system_resolver() -> Result<ResolverBackend> {
     let mut builder = TokioResolver::builder_tokio().context("load system DNS configuration")?;
     builder.options_mut().server_ordering_strategy = ServerOrderingStrategy::QueryStatistics;
-    builder.build().context("build system DNS resolver")
+    builder
+        .build()
+        .map(ResolverBackend::Hickory)
+        .context("build system DNS resolver")
 }
 
 fn build_resolver(policy: &ResolverPolicy) -> Result<TokioResolver> {
-    if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
-        return build_system_resolver();
-    }
     let ip = policy
         .upstream_ip
         .context("custom resolver requires upstreamIp")?;
@@ -277,15 +291,28 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
 }
 
 async fn lookup_with_timeout(
-    resolver: &TokioResolver,
+    resolver: &ResolverBackend,
     host: &str,
     timeout_ms: u64,
 ) -> Result<Vec<IpAddr>> {
-    let fqdn = format!("{}.", host.trim_end_matches('.'));
-    let response = timeout(Duration::from_millis(timeout_ms), resolver.lookup_ip(fqdn))
+    let mut addresses: Vec<IpAddr> = match resolver {
+        #[cfg(target_os = "android")]
+        ResolverBackend::AndroidSystem => timeout(
+            Duration::from_millis(timeout_ms),
+            tokio::net::lookup_host((host, 0)),
+        )
         .await
-        .context("DNS lookup timed out")??;
-    let mut addresses: Vec<IpAddr> = response.iter().collect();
+        .context("system DNS lookup timed out")??
+        .map(|address| address.ip())
+        .collect(),
+        ResolverBackend::Hickory(resolver) => {
+            let fqdn = format!("{}.", host.trim_end_matches('.'));
+            let response = timeout(Duration::from_millis(timeout_ms), resolver.lookup_ip(fqdn))
+                .await
+                .context("DNS lookup timed out")??;
+            response.iter().collect()
+        }
+    };
     addresses.sort_unstable();
     addresses.dedup();
     Ok(addresses)

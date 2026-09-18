@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { onBackButtonPress } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
@@ -254,6 +255,22 @@ export default function App() {
   const [readerChapterIndex, setReaderChapterIndex] = useState(0);
   const [readerLoading, setReaderLoading] = useState(false);
   const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
+
+  useEffect(() => {
+    if (status?.platform !== "android" || (page === "home" && !readerItem && !pdfItem && !selectedBook)) return;
+    let disposed = false;
+    let stop: (() => Promise<void>) | undefined;
+    void onBackButtonPress(() => {
+      if (pdfItem) setPdfItem(null);
+      else if (readerItem) closeReader();
+      else if (selectedBook) setSelectedBook(null);
+      else setPage("home");
+    }).then((listener) => {
+      if (disposed) void listener.unregister();
+      else stop = () => listener.unregister();
+    }).catch((reason) => { if (!disposed) setError(String(reason)); });
+    return () => { disposed = true; void stop?.(); };
+  }, [status?.platform, page, readerItem, readerBook, readerChapterIndex, pdfItem, selectedBook]);
 
   useEffect(() => {
     try { localStorage.setItem("luminashelf.settings", JSON.stringify(settings)); } catch { /* Storage may be unavailable. */ }
@@ -629,9 +646,9 @@ export default function App() {
       <>
         <section className="hero glass">
           <div>
-            <span className="eyebrow">HIGH PERFORMANCE E-BOOK CLIENT</span>
-            <h2>搜索、下载、本地书架，<br />现在是一条完整链路。</h2>
-            <p>Provider 请求、网络解析和分段下载由 Rust Core 负责。下载队列已经持久化，应用重启后未完成任务会保留并可继续。</p>
+            <span className="eyebrow">LUMINASHELF · 星书</span>
+            <h2>把想读的书，<br />留在自己的书架。</h2>
+            <p>搜索书目，导入手机里的电子书，随时接着上次的位置阅读。未完成的下载会保留，重新打开后可以继续。</p>
             <button className="primary-button hero-action" onClick={() => setPage("search")}>开始搜索</button>
           </div>
           <div className="orb"><span>Z</span></div>
@@ -675,13 +692,13 @@ export default function App() {
             </select>
             <button className="primary-button" disabled={searching || !query.trim() || providerNeedsLogin}>{searching ? "搜索中…" : "搜索"}</button>
           </form>
-          <div className="search-hint">每页 {settings.searchPageSize} 项 · Provider 请求由 Rust Core 发起</div>
+          <div className="search-hint">每页 {settings.searchPageSize} 项 · 支持书名、作者和关键词</div>
         </section>
 
         {providerNeedsLogin ? (
           <section className="auth-gate glass">
             <span className="auth-gate-mark">○</span>
-            <div><span className="eyebrow">AUTHENTICATION REQUIRED</span><h3>先连接 Z-Library 账户</h3><p>这个 Provider 的搜索、详情和下载需要 EAPI Session。账户入口保留在左上角工具区。</p></div>
+            <div><span className="eyebrow">ACCOUNT</span><h3>先连接 Z-Library 账户</h3><p>登录后可以搜索和下载书籍，也可以切换到无需登录的公开书源。</p></div>
             <button className="primary-button" onClick={() => setPage("account")}>前往账户</button>
           </section>
         ) : searchResult ? (
@@ -725,7 +742,7 @@ export default function App() {
             </div>
           </section>
         ) : (
-          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>搜索结果直接使用 Rust Provider 返回的数据。</p></section>
+          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>输入书名或作者，找到下一本想读的书。</p></section>
         )}
       </>
     );
@@ -827,9 +844,13 @@ export default function App() {
 
           <article className="setting-card glass">
             <span className="eyebrow">DOWNLOAD & LIBRARY</span><h3>下载与书库</h3>
-            <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
-            <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
-            <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+            {status?.platform === "android" ? (
+              <p className="search-hint">下载和导入的书籍保存在应用书库，可离线阅读。在「书库」点「导入电子书」选择手机文件。卸载应用会移除应用内保存的书籍与进度。</p>
+            ) : (<>
+              <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
+              <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
+              <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+            </>)}
           </article>
 
           <NetworkSettings networkStack={status?.networkStack ?? "Tokio · Reqwest · Hickory"} />

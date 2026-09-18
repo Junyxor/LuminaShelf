@@ -9,3 +9,7 @@ src-tauri/gen/
 
 *.tsbuildinfo
 artifacts/
+.android-sdk/
+.android-tools/
+.android-avd/
+.gradle/

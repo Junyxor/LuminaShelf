@@ -10,15 +10,15 @@ import "./pdf.css";
 const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
 const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
 
-type PdfJsRuntime = typeof import("pdfjs-dist");
+type PdfJsRuntime = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 
 let pdfJsRuntimePromise: Promise<PdfJsRuntime> | null = null;
 
 function loadPdfJsRuntime(): Promise<PdfJsRuntime> {
   if (!pdfJsRuntimePromise) {
     pdfJsRuntimePromise = Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.mjs?url"),
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.mjs?url"),
     ]).then(([pdfJs, worker]) => {
       pdfJs.GlobalWorkerOptions.workerSrc = worker.default;
       return pdfJs;

@@ -172,17 +172,6 @@ pub(super) async fn download_book(
             item,
         });
     }
-    // Upgrade partial files created by the older direct-to-destination downloader.
-    if task.destination.exists() && !staging.exists() && task.state != DownloadState::Completed {
-        std::fs::rename(&task.destination, &staging).map_err(|error| error.to_string())?;
-        if legacy_manifest.exists() {
-            std::fs::rename(
-                &legacy_manifest,
-                format!("{}.lumina-part.json", staging.display()),
-            )
-            .map_err(|error| error.to_string())?;
-        }
-    }
     task.state = DownloadState::Connecting;
     task.error = None;
     publish(&app, &state, &task)?;

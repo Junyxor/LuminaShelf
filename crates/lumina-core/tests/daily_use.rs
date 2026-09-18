@@ -102,7 +102,7 @@ fn publication_preserves_existing_books_and_can_finish_after_interruption() {
     publish_download(&partial, &published).unwrap();
     assert!(!partial.exists());
     assert_eq!(std::fs::read(&published).unwrap(), b"new book");
-    std::fs::hard_link(&published, &partial).unwrap();
+    std::fs::copy(&published, &partial).unwrap();
     publish_download(&partial, &published).unwrap();
     assert!(!partial.exists());
 }
@@ -114,4 +114,18 @@ fn an_http_error_page_cannot_be_imported_as_epub_or_pdf() {
         assert!(import_reader(Cursor::new("<html>Sign in</html>"), temp.path(), name).is_err());
     }
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    let staging = temp.path().join("book.pdf.lumina-download");
+    let manifest = temp
+        .path()
+        .join("book.pdf.lumina-download.lumina-part.json");
+    std::fs::write(&staging, b"<html>Expired session</html>").unwrap();
+    std::fs::write(&manifest, b"{}").unwrap();
+    assert!(
+        lumina_core::library::publish_download(&staging, &temp.path().join("book.pdf")).is_err()
+    );
+    assert!(
+        !staging.exists(),
+        "a fresh retry must not append to rejected content"
+    );
+    assert!(!manifest.exists());
 }

@@ -244,11 +244,18 @@ pub fn validate_ebook(path: &Path, format: LibraryFormat) -> Result<()> {
 }
 
 /// Publish without replacing an existing file. Both paths are on the same
-/// filesystem. An interrupted finalization may leave both hard links; retry is
-/// idempotent only when the existing file has exactly the staged bytes.
+/// filesystem. Retry after an interrupted finalization is idempotent only when
+/// the existing file has exactly the staged bytes.
 pub fn publish_download(staging: &Path, destination: &Path) -> Result<()> {
-    validate_ebook(staging, LibraryFormat::from_path(destination))?;
-    match fs::hard_link(staging, destination) {
+    if let Err(error) = validate_ebook(staging, LibraryFormat::from_path(destination)) {
+        fs::remove_file(staging).context("清理无效下载内容失败")?;
+        let manifest = PathBuf::from(format!("{}.lumina-part.json", staging.display()));
+        if manifest.exists() {
+            fs::remove_file(manifest)?;
+        }
+        return Err(error);
+    }
+    match publish_without_overwrite(staging, destination) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let mut source = fs::File::open(staging)?;
@@ -271,8 +278,40 @@ pub fn publish_download(staging: &Path, destination: &Path) -> Result<()> {
         }
         Err(error) => return Err(error).context("发布已完成下载失败"),
     }
-    fs::remove_file(staging)?;
+    if staging.exists() {
+        fs::remove_file(staging)?;
+    }
     Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn publish_without_overwrite(staging: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::hard_link(staging, destination)
+}
+
+#[cfg(target_os = "android")]
+fn publish_without_overwrite(staging: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let source = CString::new(staging.as_os_str().as_bytes())?;
+    let target = CString::new(destination.as_os_str().as_bytes())?;
+    // Android SELinux policies can disallow hard links. renameat2 is supported by
+    // the Android kernels we target and RENAME_NOREPLACE preserves existing books.
+    // SAF streams are copied into private storage first, so both paths share a FS.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 fn infer_title_and_authors(stem: &str) -> (String, Vec<String>) {

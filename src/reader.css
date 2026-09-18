@@ -399,6 +399,8 @@
   .reader-footer {
     padding: 12px 14px;
   }
+  .reader-toolbar { padding-top: max(12px, env(safe-area-inset-top)); }
+  .reader-footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 
   .reader-title small {
     max-width: 44vw;

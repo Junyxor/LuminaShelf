@@ -6,7 +6,9 @@ import App from "./App";
 const bridge = vi.hoisted(() => ({
   invoke: vi.fn(),
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
+  back: vi.fn(),
 }));
+vi.mock("@tauri-apps/api/app", () => ({ onBackButtonPress: bridge.back }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: bridge.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, callback: (event: { payload: unknown }) => void) => {
@@ -24,6 +26,7 @@ beforeEach(() => {
   localStorage.clear();
   bridge.listeners.clear();
   bridge.invoke.mockReset();
+  bridge.back.mockReset().mockResolvedValue({ unregister: vi.fn(async () => {}) });
   tasks = [task];
   books = [book];
   bridge.invoke.mockImplementation(async (command: string) => {
@@ -44,7 +47,7 @@ async function openPage(name: string) {
   await userEvent.click(screen.getAllByRole("button", { name })[0]);
 }
 
-describe("desktop workflows across the IPC boundary", () => {
+describe("library and download workflows across the IPC boundary", () => {
   it("restores a paused task, resumes it, and adds the completed book to the existing library", async () => {
     const original = bridge.invoke.getMockImplementation()!;
     bridge.invoke.mockImplementation(async (command: string, args: unknown) => {
@@ -111,4 +114,19 @@ describe("desktop workflows across the IPC boundary", () => {
     expect(screen.queryByText("过期结果")).toBeNull();
     expect(screen.getByText("从一本书开始")).toBeTruthy();
   });
+});
+
+it("uses Android file import without desktop directory inputs and registers Back", async () => {
+  const original = bridge.invoke.getMockImplementation()!;
+  bridge.invoke.mockImplementation(async (command: string, args: unknown) => command === "core_status"
+    ? { name: "LuminaShelf", version: "0.6.0", rustCore: true, networkStack: "Rust", platform: "android" }
+    : original(command, args));
+  render(<App />);
+  await openPage("书库");
+  expect(screen.getByRole("button", { name: "导入电子书" })).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "书库目录" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "选择目录" })).toBeNull();
+  await waitFor(() => expect(bridge.back).toHaveBeenCalled());
+  await act(async () => { bridge.back.mock.calls.at(-1)![0]({ canGoBack: false }); });
+  expect(screen.getByRole("heading", { name: "总览", level: 1 })).toBeTruthy();
 });

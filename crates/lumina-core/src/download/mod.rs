@@ -8,6 +8,8 @@ use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
+    fs::{File, OpenOptions},
+    io::{Seek, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -15,8 +17,6 @@ use std::{
     },
 };
 use tokio::{
-    fs::{File, OpenOptions},
-    io::{AsyncSeekExt, AsyncWriteExt},
     sync::{watch, Mutex, Semaphore},
     task::JoinSet,
 };
@@ -230,7 +230,7 @@ impl SegmentedDownloader {
             return Err(anyhow!("segment size must be positive"));
         }
         if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+            std::fs::create_dir_all(parent)?;
         }
 
         let shape = self.inspect_remote(&url, &headers).await?;
@@ -372,23 +372,23 @@ impl SegmentedDownloader {
             OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&destination)
-                .await?
+                .open(&destination)?
         } else {
-            File::create(&destination).await?
+            File::create(&destination)?
         };
         let mut stream = response.bytes_stream();
         let mut downloaded = if can_resume { existing } else { 0 };
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            file.write_all(&chunk).await?;
+            file.write_all(&chunk)?;
             downloaded = downloaded.saturating_add(chunk.len() as u64);
             let _ = tx.send(DownloadProgress {
                 downloaded_bytes: downloaded,
                 total_bytes: shape.total,
             });
         }
-        file.flush().await?;
+        file.flush()?;
+        file.sync_data()?;
         if shape.total.is_some_and(|total| downloaded != total) {
             return Err(anyhow!("download length does not match expected total"));
         }
@@ -436,17 +436,13 @@ impl SegmentedDownloader {
                 segment_size: self.config.segment_size,
                 completed: BTreeSet::new(),
             };
-            let prealloc_path = destination.clone();
-            tokio::task::spawn_blocking(move || -> Result<()> {
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&prealloc_path)?;
-                file.set_len(total)?;
-                Ok(())
-            })
-            .await??;
+            // Complete each disk mutation before the next cancellation point.
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&destination)?;
+            file.set_len(total)?;
             store_manifest(&manifest_path, &manifest).await?;
         } else if manifest.url != url_fingerprint(&url) {
             manifest.url = url_fingerprint(&url);
@@ -487,6 +483,9 @@ impl SegmentedDownloader {
             let manifest_path = manifest_path.clone();
 
             joins.spawn(async move {
+                // Keep the completion channel alive through the manifest write,
+                // not just the HTTP range. The controller drains it before retry.
+                let _progress_guard = tx.clone();
                 let _permit = permit;
                 download_range(
                     client, url, path, start, end, total, downloaded, tx, retries, headers,
@@ -504,7 +503,7 @@ impl SegmentedDownloader {
         while let Some(result) = joins.join_next().await {
             result??;
         }
-        let _ = tokio::fs::remove_file(manifest_path).await;
+        let _ = std::fs::remove_file(manifest_path);
         Ok(())
     }
 }
@@ -587,7 +586,7 @@ async fn load_manifest(path: &Path) -> Option<SegmentManifest> {
 
 async fn store_manifest(path: &Path, manifest: &SegmentManifest) -> Result<()> {
     let raw = serde_json::to_vec(manifest)?;
-    tokio::fs::write(path, raw).await?;
+    std::fs::write(path, raw)?;
     Ok(())
 }
 
@@ -667,10 +666,11 @@ async fn fetch_range(
         .with_context(|| format!("range {start}-{end}"));
     }
 
-    let mut file = OpenOptions::new().write(true).open(path).await?;
-    file.seek(std::io::SeekFrom::Start(start)).await?;
-    file.write_all(&body).await?;
-    file.flush().await?;
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    file.seek(std::io::SeekFrom::Start(start))?;
+    file.write_all(&body)?;
+    file.flush()?;
+    file.sync_data()?;
 
     let now = downloaded.fetch_add(expected, Ordering::Relaxed) + expected;
     let _ = tx.send(DownloadProgress {

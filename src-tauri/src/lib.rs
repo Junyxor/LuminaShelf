@@ -640,6 +640,8 @@ pub fn run() {
             set_resolver_policy,
             resolve_host,
             zlibrary_status,
+            #[cfg(all(debug_assertions, target_os = "android"))]
+            session_vault::debug_secure_store_probe,
             zlibrary_restore_session,
             zlibrary_login,
             zlibrary_logout,

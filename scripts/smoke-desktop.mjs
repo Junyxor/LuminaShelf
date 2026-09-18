@@ -105,8 +105,27 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(output, "library-mobile-layout.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  if (process.argv.includes("--online")) {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.getByRole("button", { name: "设置", exact: true }).first().click();
+    await page.getByPlaceholder("默认系统下载目录").fill(path.join(scratch, "downloads"));
+    await page.getByRole("button", { name: "搜索", exact: true }).first().click();
+    await page.getByRole("textbox", { name: "搜索电子书" }).fill("Alice");
+    await page.locator(".search-form").getByRole("button", { name: "搜索", exact: true }).click();
+    await expect(page.locator(".book-card").first()).toBeVisible({ timeout: 30000 });
+    await page.locator(".book-card").first().locator(".primary-button").click();
+    await expect.poll(async () => page.evaluate(async () => {
+      const tasks = await window.__TAURI_INTERNALS__.invoke("download_tasks");
+      return tasks[0]?.state;
+    }), { timeout: 120000, intervals: [500, 1000, 2000] }).toBe("completed");
+    const tasks = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("download_tasks"));
+    await page.getByRole("button", { name: "书库", exact: true }).first().click();
+    await page.locator(".library-card").filter({ hasText: tasks[0].title }).getByRole("button", { name: "阅读 / 继续阅读" }).click();
+    await expect(page.locator(".reader-body")).toBeVisible();
+    await page.screenshot({ path: path.join(output, "live-epub-reader.png") });
+  }
   expect(errors).toEqual([]);
-  await writeFile(path.join(output, "result.json"), JSON.stringify({ passed: true, checks: ["native IPC startup", "folder scan", "TXT reading", "PDF range rendering", "reading progress", "restart restoration", "390px layout"], dataDirectory: scratch }, null, 2));
+  await writeFile(path.join(output, "result.json"), JSON.stringify({ passed: true, online: process.argv.includes("--online"), checks: ["native IPC startup", "folder scan", "TXT reading", "PDF range rendering", "reading progress", "restart restoration", "390px layout"], dataDirectory: scratch }, null, 2));
   console.log("Desktop smoke passed: native IPC, scan, TXT/PDF, restart and mobile layout.");
 } finally {
   await shutdown();

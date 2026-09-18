@@ -9,6 +9,34 @@ pub fn supported() -> bool {
     cfg!(target_os = "android")
 }
 
+// Debug-only Android device smoke probe. It cannot read/write account credentials.
+#[cfg(all(debug_assertions, target_os = "android"))]
+#[tauri::command]
+pub(crate) fn debug_secure_store_probe(action: String) -> Result<bool, String> {
+    prepare_store()?;
+    let probe = keyring_core::Entry::new(SERVICE, "luminashelf-smoke-probe")
+        .map_err(|error| error.to_string())?;
+    const MARKER: &[u8] = b"luminashelf-non-secret-smoke-marker";
+    match action.as_str() {
+        "write" => {
+            probe
+                .set_secret(MARKER)
+                .map_err(|error| error.to_string())?;
+            Ok(true)
+        }
+        "verify" => match probe.get_secret() {
+            Ok(secret) => Ok(secret == MARKER),
+            Err(keyring_core::Error::NoEntry) => Ok(false),
+            Err(error) => Err(error.to_string()),
+        },
+        "clear" => match probe.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(true),
+            Err(error) => Err(error.to_string()),
+        },
+        _ => Err("unknown smoke probe operation".into()),
+    }
+}
+
 #[cfg(target_os = "android")]
 fn prepare_store() -> Result<(), String> {
     keyring::use_native_store(false)

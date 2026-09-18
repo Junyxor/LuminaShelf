@@ -85,10 +85,25 @@ pub(super) async fn import_library_files(
             .map_err(|error| error.to_string())?;
         for uri in selected {
             let result = async {
-                let name = api
+                let mut name = api
                     .get_name(&uri)
                     .await
                     .map_err(|error| error.to_string())?;
+                if !lumina_core::LibraryFormat::is_supported_path(std::path::Path::new(&name)) {
+                    let mime = api
+                        .get_mime_type(&uri)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let extension = match mime.split(';').next().unwrap_or("").trim() {
+                        "application/epub+zip" => Some("epub"),
+                        "application/pdf" => Some("pdf"),
+                        "text/plain" => Some("txt"),
+                        _ => None,
+                    };
+                    if let Some(extension) = extension {
+                        name = format!("{name}.{extension}");
+                    }
+                }
                 let source = api
                     .open_file_readable(&uri)
                     .await
