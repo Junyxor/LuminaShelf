@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/usable-release"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -12,9 +12,13 @@ on:
         type: boolean
         default: false
       tag:
-        description: Prerelease tag
+        description: Debug-test prerelease tag (do not use the final v1.0.0 tag)
         required: false
-        default: v0.5.0-alpha.1
+        default: v1.0.0-rc.1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -22,6 +26,8 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
 
@@ -40,15 +46,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Initialize Android project
-        run: npm run tauri -- android init --ci
+        run: |
+          cargo fetch --locked --target aarch64-linux-android
+          npm run tauri -- android init --ci
+          node scripts/patch-android-keyring.mjs
 
       - name: Resolve Android NDK
         shell: bash
@@ -60,15 +69,83 @@ jobs:
           echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
 
-      - name: Build arm64 debug APK
-        run: npm run tauri -- android build --debug --apk --target aarch64
-
-      - name: Stage APK
+      - name: Check Android Rust bridge
         shell: bash
         run: |
-          APK="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
-          test -f "$APK"
-          cp "$APK" LuminaShelf-arm64-v8a-debug.apk
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo check --locked -p lumina-shelf-desktop --target aarch64-linux-android
+
+      - name: Link Android Rust library
+        shell: bash
+        run: |
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo build -p lumina-shelf-desktop --lib --target aarch64-linux-android
+
+      - name: Build arm64 and emulator APKs
+        shell: bash
+        run: |
+          set +e
+          npm run tauri -- android build --debug --apk --split-per-abi --target aarch64 x86_64 > /tmp/android-build.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "=== Android build key errors ==="
+            grep -n -E 'error\[|error:|FAILED|undefined reference|cannot find|keyring|jni|ndk|linker|e: file://' /tmp/android-build.log | tail -n 140 || true
+            echo "=== Android build tail ==="
+            tail -n 180 /tmp/android-build.log
+            exit "$status"
+          fi
+
+      - name: Locate and stage APKs
+        shell: bash
+        run: |
+          APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
+          echo "=== Produced APKs ==="
+          find "$APK_ROOT" -type f -name '*.apk' -print
+
+          ARM64_APK="$(find "$APK_ROOT" -type f -name '*.apk' ! -name '*androidTest*' | grep -Ei '(arm64|arm64-v8a)' | grep -Ei 'debug' | head -n 1)"
+          X86_64_APK="$(find "$APK_ROOT" -type f -name '*.apk' ! -name '*androidTest*' | grep -Ei '(x86_64|x86-64)' | grep -Ei 'debug' | head -n 1)"
+          test -n "$ARM64_APK"
+          test -f "$ARM64_APK"
+          test -n "$X86_64_APK"
+          test -f "$X86_64_APK"
+
+          cp "$ARM64_APK" LuminaShelf-arm64-v8a-debug.apk
+          echo "ARM64_DEBUG_APK=$ARM64_APK" >> "$GITHUB_ENV"
+          echo "X86_64_DEBUG_APK=$X86_64_APK" >> "$GITHUB_ENV"
+
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Exercise Android import, reading and secure storage
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          emulator-port: 5556
+          disable-animations: true
+          script: |
+            test -n "$X86_64_DEBUG_APK"
+            adb -s emulator-5556 install "$X86_64_DEBUG_APK"
+            npm run test:android -- --background --library
+
+      - name: Upload Android smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-android-smoke
+          path: artifacts/android/smoke/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -84,8 +161,12 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
+          if [ "$RELEASE_TAG" = "v1.0.0" ]; then
+            echo "::error::The Android CI artifact is a debug/test APK. Build the stable-key signed R8 APK locally before publishing v1.0.0."
+            exit 1
+          fi
           gh release create "$RELEASE_TAG" LuminaShelf-arm64-v8a-debug.apk \
             --target "$GITHUB_SHA" \
             --title "LuminaShelf ${RELEASE_TAG}" \
-            --notes "Early Android arm64 test build. This prerelease is intended for installation and real-device testing." \
+            --notes "CI debug/test APK for Android validation. This is not the stable-key signed 1.0 release artifact and must not be published as v1.0.0." \
             --prerelease

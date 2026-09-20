@@ -1,0 +1,24 @@
+.task-state.paused { color: var(--md-primary); }
+.task-state.cancelled { color: var(--md-on-surface-variant); }
+
+.download-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.download-actions .primary-button,
+.download-actions .ghost-button {
+  min-width: 92px;
+}
+
+@media (max-width: 620px) {
+  .download-actions {
+    justify-content: stretch;
+  }
+
+  .download-actions button {
+    flex: 1;
+  }
+}

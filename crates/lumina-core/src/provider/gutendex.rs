@@ -13,6 +13,7 @@ use url::Url;
 #[derive(Clone)]
 pub struct GutendexProvider {
     client: Client,
+    base_url: Url,
 }
 
 impl GutendexProvider {
@@ -23,10 +24,20 @@ impl GutendexProvider {
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .pool_max_idle_per_host(6)
             .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 provider-gutendex")
+            .user_agent(format!(
+                "LuminaShelf/{} provider-gutendex",
+                env!("CARGO_PKG_VERSION")
+            ))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
-        Ok(Self { client })
+        Self::with_client(client, Url::parse("https://gutendex.com/books/")?)
+    }
+
+    pub fn with_client(client: Client, base_url: Url) -> Result<Self> {
+        if !matches!(base_url.scheme(), "https" | "http") {
+            return Err(anyhow!("unsupported provider URL scheme"));
+        }
+        Ok(Self { client, base_url })
     }
 
     async fn fetch(&self, url: Url) -> Result<GutendexResponse> {
@@ -41,7 +52,7 @@ impl GutendexProvider {
     }
 
     async fn fetch_one(&self, id: &str) -> Result<GutendexBook> {
-        let mut url = Url::parse("https://gutendex.com/books/")?;
+        let mut url = self.base_url.clone();
         url.query_pairs_mut().append_pair("ids", id);
         self.fetch(url)
             .await?
@@ -71,18 +82,36 @@ impl BookProvider for GutendexProvider {
     }
 
     async fn search(&self, query: SearchQuery) -> Result<SearchResult> {
-        let mut url = Url::parse("https://gutendex.com/books/")?;
-        {
-            let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("search", query.text.trim());
-            if query.page > 1 {
-                pairs.append_pair("page", &query.page.to_string());
+        // Gutendex's API uses 32-item pages. Simply truncating each upstream
+        // response to the UI size silently loses books at every page boundary.
+        const UPSTREAM_PAGE_SIZE: u64 = 32;
+        let page = query.page.max(1);
+        let page_size = u64::from(query.page_size.clamp(1, 50));
+        let offset = u64::from(page - 1) * page_size;
+        let mut upstream_page = offset / UPSTREAM_PAGE_SIZE + 1;
+        let first_offset = (offset % UPSTREAM_PAGE_SIZE) as usize;
+        let mut books = Vec::new();
+        let mut total = 0;
+        loop {
+            let mut url = self.base_url.clone();
+            url.query_pairs_mut()
+                .append_pair("search", query.text.trim())
+                .append_pair("page", &upstream_page.to_string());
+            let response = self.fetch(url).await?;
+            if books.is_empty() {
+                total = response.count;
             }
+            let has_more = response.next.is_some();
+            books.extend(response.results);
+            if books.len() >= first_offset + page_size as usize || !has_more {
+                break;
+            }
+            upstream_page += 1;
         }
-        let response = self.fetch(url).await?;
-        let mut items = response
-            .results
+        let mut items = books
             .into_iter()
+            .skip(first_offset)
+            .take(page_size as usize)
             .map(to_summary)
             .collect::<Vec<_>>();
         if !query.formats.is_empty() {
@@ -92,13 +121,10 @@ impl BookProvider for GutendexProvider {
                     .any(|format| query.formats.contains(format))
             });
         }
-        if query.page_size > 0 && items.len() > query.page_size as usize {
-            items.truncate(query.page_size as usize);
-        }
         Ok(SearchResult {
             items,
-            page: query.page.max(1),
-            has_next: response.next.is_some(),
+            page,
+            has_next: offset + page_size < total,
         })
     }
 
@@ -121,6 +147,7 @@ impl BookProvider for GutendexProvider {
 
 #[derive(Debug, Clone, Deserialize)]
 struct GutendexResponse {
+    count: u64,
     next: Option<String>,
     results: Vec<GutendexBook>,
 }

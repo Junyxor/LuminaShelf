@@ -66,7 +66,10 @@ impl ZLibraryProvider {
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 provider-zlibrary-eapi")
+            .user_agent(format!(
+                "LuminaShelf/{} provider-zlibrary-eapi",
+                env!("CARGO_PKG_VERSION")
+            ))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
         Ok(Self {

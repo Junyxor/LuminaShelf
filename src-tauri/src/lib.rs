@@ -1,8 +1,15 @@
+mod download_control;
+mod downloads;
+mod library_backup;
+mod library_import;
+mod library_manage;
+mod native_downloads;
 mod pdf;
 mod reader_bridge;
+mod session_vault;
 
+use download_control::TransferRegistry;
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::{now_unix_ms, scan_folder},
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
     ProviderRegistry, ReadingProgress, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery,
@@ -17,7 +24,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{Manager, State};
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -35,6 +42,9 @@ struct AppState {
     providers: ProviderRegistry,
     resolver_policy_path: PathBuf,
     state_store: StateStore,
+    managed_library_dir: PathBuf,
+    transfers: TransferRegistry,
+    download_slots: tokio::sync::Semaphore,
     zlibrary: Arc<ZLibraryProvider>,
     zlibrary_probe: Client,
     zlibrary_config: RwLock<ZLibraryConfig>,
@@ -43,6 +53,12 @@ struct AppState {
 
 impl AppState {
     fn new(config_dir: PathBuf) -> Result<Self, String> {
+        let state_store = StateStore::open(config_dir.join("state.sqlite3"))
+            .map_err(|error| format!("open app state: {error}"))?;
+        state_store
+            .recover_incomplete_downloads()
+            .map_err(|error| format!("recover download queue: {error}"))?;
+
         let resolver_policy_path = config_dir.join("resolver-policy.json");
         let persisted = load_resolver_policy(&resolver_policy_path).ok();
         let resolver = match persisted.and_then(|policy| AppResolver::new(policy).ok()) {
@@ -52,8 +68,6 @@ impl AppState {
                 AppResolver::system().map_err(|error| error.to_string())?
             }
         };
-        let state_store = StateStore::open(config_dir.join("state.sqlite3"))
-            .map_err(|error| error.to_string())?;
 
         let zlibrary_config_path = config_dir.join("zlibrary.json");
         let mut zlibrary_config = load_zlibrary_config(&zlibrary_config_path).unwrap_or_default();
@@ -86,7 +100,10 @@ impl AppState {
             .pool_max_idle_per_host(4)
             .tcp_nodelay(true)
             .redirect(Policy::limited(4))
-            .user_agent("LuminaShelf/0.5 zlibrary-health")
+            .user_agent(format!(
+                "LuminaShelf/{} zlibrary-health",
+                env!("CARGO_PKG_VERSION")
+            ))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())))
             .build()
             .map_err(|error| error.to_string())?;
@@ -96,6 +113,9 @@ impl AppState {
             providers,
             resolver_policy_path,
             state_store,
+            managed_library_dir: config_dir.join("library"),
+            transfers: TransferRegistry::default(),
+            download_slots: tokio::sync::Semaphore::new(3),
             zlibrary,
             zlibrary_probe,
             zlibrary_config: RwLock::new(zlibrary_config),
@@ -111,22 +131,7 @@ struct CoreStatus {
     version: &'static str,
     rust_core: bool,
     network_stack: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadProgressEvent {
-    provider_id: String,
-    book_id: String,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadReceipt {
-    path: PathBuf,
-    item: LibraryItem,
+    platform: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -150,6 +155,15 @@ struct ZLibraryAccountStatus {
     signed_in: bool,
     origin: String,
     origin_mode: ZLibraryOriginMode,
+    secure_session_storage: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZLibraryRestoreResult {
+    status: ZLibraryAccountStatus,
+    restored: bool,
+    warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +171,8 @@ struct ZLibraryAccountStatus {
 struct ZLibraryLoginResult {
     status: ZLibraryAccountStatus,
     profile: Option<ZLibraryProfile>,
+    session_persisted: bool,
+    persistence_warning: Option<String>,
 }
 
 #[tauri::command]
@@ -166,6 +182,7 @@ fn core_status() -> CoreStatus {
         version: env!("CARGO_PKG_VERSION"),
         rust_core: true,
         network_stack: "Tokio · Reqwest · Hickory",
+        platform: std::env::consts::OS,
     }
 }
 
@@ -217,6 +234,44 @@ async fn zlibrary_status(state: State<'_, AppState>) -> Result<ZLibraryAccountSt
 }
 
 #[tauri::command]
+async fn zlibrary_restore_session(
+    state: State<'_, AppState>,
+) -> Result<ZLibraryRestoreResult, String> {
+    if state.zlibrary.has_session().await {
+        return Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: None,
+        });
+    }
+
+    match session_vault::load() {
+        Ok(Some(session)) => match state.zlibrary.set_session(session).await {
+            Ok(()) => Ok(ZLibraryRestoreResult {
+                status: zlibrary_account_status(&state).await,
+                restored: true,
+                warning: None,
+            }),
+            Err(error) => Ok(ZLibraryRestoreResult {
+                status: zlibrary_account_status(&state).await,
+                restored: false,
+                warning: Some(format!("stored Z-Library session was rejected: {error}")),
+            }),
+        },
+        Ok(None) => Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: None,
+        }),
+        Err(error) => Ok(ZLibraryRestoreResult {
+            status: zlibrary_account_status(&state).await,
+            restored: false,
+            warning: Some(error),
+        }),
+    }
+}
+
+#[tauri::command]
 async fn zlibrary_login(
     state: State<'_, AppState>,
     email: String,
@@ -258,21 +313,28 @@ async fn zlibrary_login(
         .set_origin(selected_origin)
         .await
         .map_err(|error| error.to_string())?;
-    state
+    let session = state
         .zlibrary
         .login_direct(email, &password)
         .await
         .map_err(|error| error.to_string())?;
 
+    let (session_persisted, persistence_warning) = match session_vault::save(&session) {
+        Ok(persisted) => (persisted, None),
+        Err(error) => (false, Some(error)),
+    };
     let profile = state.zlibrary.profile().await.ok();
     Ok(ZLibraryLoginResult {
         status: zlibrary_account_status(&state).await,
         profile,
+        session_persisted,
+        persistence_warning,
     })
 }
 
 #[tauri::command]
 async fn zlibrary_logout(state: State<'_, AppState>) -> Result<ZLibraryAccountStatus, String> {
+    session_vault::clear()?;
     state.zlibrary.clear_session().await;
     Ok(zlibrary_account_status(&state).await)
 }
@@ -368,7 +430,10 @@ fn scan_library(
         .state_store
         .upsert_library_items(&items)
         .map_err(|error| error.to_string())?;
-    Ok(items)
+    state
+        .state_store
+        .list_library_items()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -403,97 +468,13 @@ fn save_reading_progress(
     Ok(progress)
 }
 
-#[tauri::command]
-async fn download_book(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    provider_id: String,
-    book_id: String,
-    title: String,
-    format: BookFormat,
-    download_dir: Option<String>,
-) -> Result<DownloadReceipt, String> {
-    let url = state
-        .providers
-        .acquisition_url(&provider_id, &book_id, format)
-        .await
-        .map_err(|error| error.to_string())?;
-    let headers = state
-        .providers
-        .download_headers(&provider_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let system_download_dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    let destination_dir = download_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = resumable_destination(
-        &destination_dir,
-        &title,
-        format.extension(),
-        &provider_id,
-        &book_id,
-    );
-    let downloader =
-        SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
-            .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
-
-    let progress_app = app.clone();
-    let progress_provider = provider_id.clone();
-    let progress_book = book_id.clone();
-    let monitor = tauri::async_runtime::spawn(async move {
-        while rx.changed().await.is_ok() {
-            let progress = *rx.borrow_and_update();
-            let _ = progress_app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    provider_id: progress_provider.clone(),
-                    book_id: progress_book.clone(),
-                    downloaded_bytes: progress.downloaded_bytes,
-                    total_bytes: progress.total_bytes,
-                },
-            );
-        }
-    });
-
-    let result = downloader
-        .download_to_with_context(
-            url,
-            destination.clone(),
-            headers,
-            Some(format!("{provider_id}:{book_id}")),
-            tx,
-        )
-        .await;
-    let _ = monitor.await;
-    result.map_err(|error| error.to_string())?;
-
-    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
-        .map_err(|error| error.to_string())?;
-    state
-        .state_store
-        .upsert_library_item(&item)
-        .map_err(|error| error.to_string())?;
-    Ok(DownloadReceipt {
-        path: destination,
-        item,
-    })
-}
-
 async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
     let config = state.zlibrary_config.read().await.clone();
     ZLibraryAccountStatus {
         signed_in: state.zlibrary.has_session().await,
         origin: state.zlibrary.origin().await.to_string(),
         origin_mode: config.origin_mode,
+        secure_session_storage: session_vault::supported(),
     }
 }
 
@@ -610,7 +591,11 @@ fn resumable_destination(
     let title = title.chars().take(80).collect::<String>();
     let identity = sanitize_filename(&format!("{provider_id}-{book_id}"));
     let identity = identity.chars().take(36).collect::<String>();
-    directory.join(format!("{title} [{identity}].{extension}"))
+    let fingerprint = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("{provider_id}\n{book_id}\n{extension}").as_bytes(),
+    );
+    directory.join(format!("{title} [{identity}-{fingerprint}].{extension}"))
 }
 
 fn sanitize_filename(value: &str) -> String {
@@ -629,6 +614,102 @@ fn sanitize_filename(value: &str) -> String {
     } else {
         cleaned.chars().take(120).collect()
     }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = tauri::Builder::default().plugin(native_downloads::init());
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_android_fs::init());
+    builder
+        .setup(|app| {
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            #[cfg(debug_assertions)]
+            let config_dir = std::env::var_os("LUMINASHELF_TEST_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or(config_dir);
+            let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
+            app.manage(state);
+            native_downloads::attach_app(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            core_status,
+            provider_descriptors,
+            downloads::download_tasks,
+            downloads::remove_download_task,
+            downloads::pause_download,
+            downloads::cancel_download,
+            resolver_policy,
+            set_resolver_policy,
+            resolve_host,
+            zlibrary_status,
+            #[cfg(all(debug_assertions, target_os = "android"))]
+            session_vault::debug_secure_store_probe,
+            zlibrary_restore_session,
+            zlibrary_login,
+            zlibrary_logout,
+            zlibrary_profile,
+            zlibrary_history,
+            search_books,
+            book_details,
+            library_items,
+            library_manage::bookmarks,
+            library_manage::add_bookmark,
+            library_manage::remove_bookmark,
+            library_manage::edit_library_item,
+            library_manage::remove_library_item,
+            library_backup::export_library_book,
+            library_backup::share_library_book,
+            library_backup::export_library_backup,
+            library_backup::restore_library_backup,
+            library_import::import_library_files,
+            library_import::choose_library_folder,
+            scan_library,
+            reader_bridge::open_local_book,
+            reader_bridge::open_local_book_metadata,
+            reader_bridge::open_local_book_chapter,
+            reading_progress,
+            save_reading_progress,
+            downloads::download_book,
+            downloads::enqueue_download,
+            #[cfg(debug_assertions)]
+            downloads::debug_enqueue_download,
+            pdf::read_pdf_bytes
+        ])
+        .build(tauri::generate_context!())
+        .expect("failed to build LuminaShelf")
+        .run(|app, event| {
+            #[cfg(target_os = "android")]
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if !app.state::<AppState>().transfers.is_empty() {
+                        api.prevent_exit();
+                    }
+                }
+                tauri::RunEvent::Resumed => {
+                    // Android may destroy the activity after a Recents dismissal
+                    // while the foreground service keeps the Rust runtime alive.
+                    if app.webview_windows().is_empty() {
+                        if let Some(config) = app.config().app.windows.first() {
+                            let result = tauri::WebviewWindowBuilder::from_config(app, config)
+                                .and_then(|builder| builder.build());
+                            if let Err(error) = result {
+                                eprintln!("recreate Android reader window: {error}");
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            #[cfg(not(target_os = "android"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
@@ -651,43 +732,4 @@ mod tests {
         let second = resumable_destination(directory, "Same Title", "epub", "zlibrary", "2");
         assert_ne!(first, second);
     }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
-            app.manage(state);
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            core_status,
-            provider_descriptors,
-            resolver_policy,
-            set_resolver_policy,
-            resolve_host,
-            zlibrary_status,
-            zlibrary_login,
-            zlibrary_logout,
-            zlibrary_profile,
-            zlibrary_history,
-            search_books,
-            book_details,
-            library_items,
-            scan_library,
-            reader_bridge::open_local_book,
-            reader_bridge::open_local_book_metadata,
-            reader_bridge::open_local_book_chapter,
-            reading_progress,
-            save_reading_progress,
-            download_book,
-            pdf::read_pdf_bytes
-        ])
-        .run(tauri::generate_context!())
-        .expect("failed to run LuminaShelf");
 }

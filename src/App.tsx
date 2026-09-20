@@ -1,15 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
+import { onBackButtonPress } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import NetworkSettings from "./NetworkSettings";
 import PdfReader from "./PdfReader";
 import ReaderView from "./ReaderView";
+import { parseReaderPosition } from "./readerPosition";
+import LibraryActions from "./LibraryActions";
 import ZLibraryAccount, { type ZLibraryAccountStatus } from "./ZLibraryAccount";
 
 type CoreStatus = {
   name: string;
   version: string;
   rustCore: boolean;
+  platform: string;
   networkStack: string;
 };
 
@@ -76,17 +80,29 @@ type ReadingProgress = {
   fraction: number;
   updatedAtUnixMs: number;
 };
+type DownloadState =
+  | "queued"
+  | "connecting"
+  | "downloading"
+  | "paused"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
-type DownloadProgressEvent = {
+type PersistedDownloadTask = {
+  id: string;
   providerId: string;
   bookId: string;
+  title: string;
+  format: BookFormat;
+  destination: string;
+  state: DownloadState;
   downloadedBytes: number;
   totalBytes?: number | null;
-};
-
-type DownloadReceipt = {
-  path: string;
-  item: LibraryItem;
+  error?: string | null;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
 };
 
 type DownloadTask = {
@@ -95,7 +111,7 @@ type DownloadTask = {
   bookId: string;
   title: string;
   format: BookFormat;
-  state: "queued" | "downloading" | "completed" | "failed";
+  state: DownloadState;
   downloadedBytes: number;
   totalBytes?: number | null;
   path?: string;
@@ -108,6 +124,12 @@ type AppSettings = {
   downloadDirectory: string;
   libraryDirectory: string;
   recursiveLibraryScan: boolean;
+};
+
+type ZLibraryRestoreResult = {
+  status: ZLibraryAccountStatus;
+  restored: boolean;
+  warning?: string | null;
 };
 
 type Page = "home" | "search" | "downloads" | "library" | "account" | "settings";
@@ -158,14 +180,46 @@ function formatBytes(value?: number | null) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
+function taskKey(providerId: string, bookId: string, format: BookFormat) {
+  return `${providerId}:${bookId}:${format}`;
+}
+
 function taskProgress(task: DownloadTask) {
   if (!task.totalBytes || task.totalBytes <= 0) return task.state === "completed" ? 100 : 0;
   return Math.min(100, Math.round((task.downloadedBytes / task.totalBytes) * 100));
 }
 
+function taskLabel(task: DownloadTask) {
+  switch (task.state) {
+    case "completed": return "已完成";
+    case "failed": return "失败";
+    case "paused": return "已暂停";
+    case "cancelled": return "已取消";
+    case "queued": return "排队";
+    case "connecting": return "连接中";
+    case "verifying": return "校验中";
+    case "downloading": return `${taskProgress(task)}%`;
+  }
+}
+
 function preferredFormat(book: BookSummary): BookFormat | null {
   const candidates = [book.format, ...book.availableFormats].filter(Boolean) as BookFormat[];
   return candidates.find((format) => format !== "other") ?? candidates[0] ?? null;
+}
+
+function restoreDownloads(tasks: PersistedDownloadTask[]) {
+  return Object.fromEntries(tasks.map((task) => [task.id, {
+    key: task.id,
+    providerId: task.providerId,
+    bookId: task.bookId,
+    title: task.title,
+    format: task.format,
+    state: task.state,
+    downloadedBytes: task.downloadedBytes,
+    totalBytes: task.totalBytes,
+    path: task.destination,
+    error: task.error ?? undefined,
+  } satisfies DownloadTask]));
 }
 
 export default function App() {
@@ -177,6 +231,18 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 
   const [query, setQuery] = useState("");
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("luminashelf.recentSearches") || "[]").filter((value: unknown) => typeof value === "string").slice(0, 12); } catch { return []; }
+  });
+  const [downloadFormat, setDownloadFormat] = useState<BookFormat | "">("");
+  const searchVersion = useRef(0);
+  const detailsVersion = useRef(0);
+  const pendingDownloads = useRef(new Set<string>());
+  const [taskActions, setTaskActions] = useState<Set<string>>(new Set());
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [librarySort, setLibrarySort] = useState("recent");
+  const [manageItem, setManageItem] = useState<LibraryItem | null>(null);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [searching, setSearching] = useState(false);
@@ -190,25 +256,48 @@ export default function App() {
   const [readerItem, setReaderItem] = useState<LibraryItem | null>(null);
   const [readerBook, setReaderBook] = useState<ReaderBookMetadata | null>(null);
   const [readerChapterIndex, setReaderChapterIndex] = useState(0);
+  const [readerInitialScroll, setReaderInitialScroll] = useState(0);
   const [readerLoading, setReaderLoading] = useState(false);
   const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
 
   useEffect(() => {
-    localStorage.setItem("luminashelf.settings", JSON.stringify(settings));
+    if (status?.platform !== "android" || (page === "home" && !readerItem && !pdfItem && !selectedBook && !manageItem)) return;
+    let disposed = false;
+    let stop: (() => Promise<void>) | undefined;
+    void onBackButtonPress(() => {
+      if (manageItem) setManageItem(null);
+      else if (pdfItem) setPdfItem(null);
+      else if (readerItem) closeReader();
+      else if (selectedBook) setSelectedBook(null);
+      else setPage("home");
+    }).then((listener) => {
+      if (disposed) void listener.unregister();
+      else stop = () => listener.unregister();
+    }).catch((reason) => { if (!disposed) setError(String(reason)); });
+    return () => { disposed = true; void stop?.(); };
+  }, [status?.platform, page, readerItem, readerBook, readerChapterIndex, pdfItem, selectedBook, manageItem]);
+
+  useEffect(() => {
+    try { localStorage.setItem("luminashelf.settings", JSON.stringify(settings)); } catch { /* Storage may be unavailable. */ }
   }, [settings]);
 
   useEffect(() => {
     Promise.all([
       invoke<CoreStatus>("core_status"),
       invoke<ProviderDescriptor[]>("provider_descriptors"),
-      invoke<ZLibraryAccountStatus>("zlibrary_status"),
+      invoke<ZLibraryRestoreResult>("zlibrary_restore_session"),
+      invoke<PersistedDownloadTask[]>("download_tasks"),
       invoke<LibraryItem[]>("library_items"),
     ])
-      .then(([nextStatus, nextProviders, nextZlibraryStatus, nextLibraryItems]) => {
+      .then(([nextStatus, nextProviders, zlibraryRestore, persistedDownloads, nextLibraryItems]) => {
         setStatus(nextStatus);
-        setProviders(nextProviders);
-        setZlibraryStatus(nextZlibraryStatus);
         setLibraryItems(nextLibraryItems);
+        setProviders(nextProviders);
+        setZlibraryStatus(zlibraryRestore.status);
+        setDownloads(restoreDownloads(persistedDownloads));
+        if (zlibraryRestore.warning) {
+          setError(`安全 Session 恢复失败：${zlibraryRestore.warning}`);
+        }
         const preferred = nextProviders.some((item) => item.id === settings.defaultProvider)
           ? settings.defaultProvider
           : nextProviders.find((item) => !item.capabilities.authenticated)?.id ?? nextProviders[0]?.id ?? "";
@@ -219,31 +308,22 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
-    listen<DownloadProgressEvent>("download-progress", (event) => {
-      const progress = event.payload;
-      const key = `${progress.providerId}:${progress.bookId}`;
-      setDownloads((current) => {
-        const task = current[key];
-        if (!task) return current;
-        return {
-          ...current,
-          [key]: {
-            ...task,
-            state: "downloading",
-            downloadedBytes: progress.downloadedBytes,
-            totalBytes: progress.totalBytes,
-          },
-        };
-      });
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+    const stops: Array<() => void> = [];
+    const subscriptions = [
+      listen<PersistedDownloadTask>("download-task-updated", ({ payload }) => {
+        setDownloads((current) => ({ ...current, ...restoreDownloads([payload]) }));
+      }),
+      listen("library-updated", () => {
+        void invoke<LibraryItem[]>("library_items").then(setLibraryItems).catch((reason) => setError(String(reason)));
+      }),
+    ];
+    for (const subscription of subscriptions) {
+      void subscription.then((stop) => {
+        if (disposed) stop();
+        else stops.push(stop);
+      }).catch((reason) => { if (!disposed) setError(String(reason)); });
+    }
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
   }, []);
 
   const active = pageMeta[page];
@@ -254,7 +334,11 @@ export default function App() {
       && !zlibraryStatus?.signedIn,
   );
   const downloadTasks = useMemo(
-    () => Object.values(downloads).sort((a, b) => a.title.localeCompare(b.title)),
+    () => Object.values(downloads).sort((a, b) => {
+      const aDone = a.state === "completed" ? 1 : 0;
+      const bDone = b.state === "completed" ? 1 : 0;
+      return aDone - bDone || a.title.localeCompare(b.title);
+    }),
     [downloads],
   );
   const completedCount = downloadTasks.filter((task) => task.state === "completed").length;
@@ -263,6 +347,10 @@ export default function App() {
     : 0;
 
   function changeProvider(providerId: string) {
+    searchVersion.current += 1;
+    detailsVersion.current += 1;
+    setSearching(false);
+    setDetailsLoading(false);
     setSelectedProvider(providerId);
     setSearchResult(null);
     setSelectedBook(null);
@@ -278,8 +366,14 @@ export default function App() {
     }
   }
 
+  async function refreshDownloads() {
+    const persisted = await invoke<PersistedDownloadTask[]>("download_tasks");
+    setDownloads(restoreDownloads(persisted));
+  }
+
   async function runSearch(targetPage = 1) {
     if (!query.trim() || !selectedProvider || providerNeedsLogin) return;
+    const version = ++searchVersion.current;
     setSearching(true);
     setError(null);
     try {
@@ -290,11 +384,16 @@ export default function App() {
         pageSize: settings.searchPageSize,
         formats: [],
       });
-      setSearchResult(result);
+      if (version === searchVersion.current) {
+        setSearchResult(result);
+        const recent = [query.trim(), ...recentSearches.filter((value) => value !== query.trim())].slice(0, 12);
+        setRecentSearches(recent);
+        try { localStorage.setItem("luminashelf.recentSearches", JSON.stringify(recent)); } catch {}
+      }
     } catch (reason) {
-      setError(String(reason));
+      if (version === searchVersion.current) setError(`搜索失败，请检查网络或在设置中调整 DNS，然后重试。详情：${String(reason)}`);
     } finally {
-      setSearching(false);
+      if (version === searchVersion.current) setSearching(false);
     }
   }
 
@@ -304,7 +403,9 @@ export default function App() {
   }
 
   async function openDetails(book: BookSummary) {
+    const version = ++detailsVersion.current;
     setSelectedBook(book);
+    setDownloadFormat(preferredFormat(book) ?? "");
     setBookDetails(null);
     setDetailsLoading(true);
     setError(null);
@@ -313,70 +414,147 @@ export default function App() {
         providerId: selectedProvider,
         bookId: book.id,
       });
-      setBookDetails(details);
+      if (version === detailsVersion.current) setBookDetails(details);
     } catch (reason) {
-      setError(String(reason));
+      if (version === detailsVersion.current) setError(String(reason));
     } finally {
-      setDetailsLoading(false);
+      if (version === detailsVersion.current) setDetailsLoading(false);
     }
   }
 
-  async function startDownload(book: BookSummary) {
-    const format = preferredFormat(book);
+  async function queueDownload(
+    providerId: string,
+    bookId: string,
+    title: string,
+    format: BookFormat,
+  ) {
+    if (providerId === "zlibrary" && !zlibraryStatus?.signedIn) {
+      setPage("account");
+      setError("继续 Z-Library 下载前需要重新登录账户。");
+      return;
+    }
+
+    const key = taskKey(providerId, bookId, format);
+    if (pendingDownloads.current.has(key)) return;
+    pendingDownloads.current.add(key);
+    setDownloads((current) => {
+      const existing = current[key];
+      return {
+        ...current,
+        [key]: {
+          key,
+          providerId,
+          bookId,
+          title,
+          format,
+          state: "queued",
+          downloadedBytes: existing?.downloadedBytes ?? 0,
+          totalBytes: existing?.totalBytes,
+          path: existing?.path,
+        },
+      };
+    });
+    setError(null);
+
+    try {
+      const task = await invoke<PersistedDownloadTask>("enqueue_download", {
+        providerId, bookId, title, format,
+        downloadDir: settings.downloadDirectory.trim() || null,
+      });
+      setDownloads((current) => current[key]?.state !== "queued"
+        ? current : { ...current, ...restoreDownloads([task]) });
+    } catch (reason) {
+      const message = String(reason);
+      try {
+        await refreshDownloads();
+      } catch (refreshReason) {
+        setError(`${message} · 队列刷新失败：${String(refreshReason)}`);
+        return;
+      }
+      if (message.includes("__LUMINA_PAUSED__") || message.includes("__LUMINA_CANCELLED__")) {
+        return;
+      }
+      setError(message);
+    } finally {
+      pendingDownloads.current.delete(key);
+    }
+  }
+
+  async function startDownload(book: BookSummary, chosen?: BookFormat) {
+    const format = chosen ?? preferredFormat(book);
     if (!format || !selectedProvider) {
       setError("这本书没有可用的下载格式。");
       return;
     }
-    if (providerNeedsLogin) {
-      setPage("account");
-      return;
-    }
-    const key = `${selectedProvider}:${book.id}`;
-    setDownloads((current) => ({
-      ...current,
-      [key]: {
-        key,
-        providerId: selectedProvider,
-        bookId: book.id,
-        title: book.title,
-        format,
-        state: "queued",
-        downloadedBytes: 0,
-      },
-    }));
-    setError(null);
+    await queueDownload(selectedProvider, book.id, book.title, format);
+  }
+
+  async function retryDownload(task: DownloadTask) {
+    await queueDownload(task.providerId, task.bookId, task.title, task.format);
+  }
+
+  async function controlDownload(task: DownloadTask, command: "pause_download" | "cancel_download") {
+    setTaskActions((current) => new Set(current).add(task.key));
     try {
-      const receipt = await invoke<DownloadReceipt>("download_book", {
-        providerId: selectedProvider,
-        bookId: book.id,
-        title: book.title,
-        format,
-        downloadDir: settings.downloadDirectory.trim() || null,
-      });
-      setDownloads((current) => ({
-        ...current,
-        [key]: {
-          ...current[key],
-          state: "completed",
-          path: receipt.path,
-          downloadedBytes: current[key]?.totalBytes ?? current[key]?.downloadedBytes ?? 0,
-        },
-      }));
-      setLibraryItems((current) => [
-        receipt.item,
-        ...current.filter((item) => item.path !== receipt.item.path),
-      ]);
+      await invoke<boolean>(command, { taskId: task.key });
+      await refreshDownloads();
     } catch (reason) {
-      setDownloads((current) => ({
-        ...current,
-        [key]: {
-          ...current[key],
-          state: "failed",
-          error: String(reason),
-        },
-      }));
+      setError(String(reason));
+    } finally {
+      setTaskActions((current) => { const next = new Set(current); next.delete(task.key); return next; });
+    }
+  }
+
+  async function removeDownload(task: DownloadTask) {
+    try {
+      await invoke<boolean>("remove_download_task", { taskId: task.key });
+      setDownloads((current) => {
+        const next = { ...current };
+        delete next[task.key];
+        return next;
+      });
+    } catch (reason) {
       setError(String(reason));
     }
+  }
+
+  async function backupLibrary(restore: boolean) {
+    setLibraryLoading(true);
+    setError(null);
+    setImportMessage(restore ? "请选择书库备份文件…" : "正在打包书籍和阅读进度…");
+    try {
+      if (restore) {
+        const result = await invoke<{ imported: number; items: LibraryItem[] } | null>("restore_library_backup");
+        if (result) {
+          setLibraryItems(result.items);
+          setImportMessage(`已恢复 ${result.imported} 本书及阅读位置、书签。`);
+        } else setImportMessage(null);
+      } else {
+        const count = await invoke<number | null>("export_library_backup");
+        setImportMessage(count === null ? null : `已导出 ${count} 本书，备份不包含账户凭据。`);
+      }
+    } catch (reason) { setError(String(reason)); setImportMessage(null); }
+    finally { setLibraryLoading(false); }
+  }
+
+  async function importLibrary() {
+    setLibraryLoading(true);
+    setError(null);
+    setImportMessage(null);
+    try {
+      const report = await invoke<{ items: LibraryItem[]; imported: number; errors: string[] }>("import_library_files");
+      setLibraryItems(report.items);
+      if (report.imported) setImportMessage(`已导入 ${report.imported} 本书，文件已保存在应用书库。`);
+      if (report.errors.length) setError(report.errors.join("；"));
+    } catch (reason) { setError(String(reason)); }
+    finally { setLibraryLoading(false); }
+  }
+
+  async function chooseFolder() {
+    try {
+      const path = await invoke<string | null>("choose_library_folder");
+      if (path) setSettings((current) => ({ ...current, libraryDirectory: path }));
+    } catch (reason) { setError(String(reason)); }
   }
 
   async function scanLibrary() {
@@ -419,8 +597,9 @@ export default function App() {
         invoke<ReadingProgress | null>("reading_progress", { libraryId: item.id }),
       ]);
       let chapterIndex = 0;
-      if (progress?.locator) {
-        const located = book.chapters.findIndex((chapter) => chapter.id === progress.locator);
+      const savedPosition = parseReaderPosition(progress?.locator);
+      if (savedPosition) {
+        const located = book.chapters.findIndex((chapter) => chapter.id === savedPosition.chapterId);
         if (located >= 0) chapterIndex = located;
       } else if (progress && book.chapters.length > 1) {
         chapterIndex = Math.min(
@@ -429,7 +608,8 @@ export default function App() {
         );
       }
       setReaderItem(item);
-      setReaderBook(book);
+      setReaderBook({ ...book, title: item.title });
+      setReaderInitialScroll(savedPosition?.scroll ?? 0);
       setReaderChapterIndex(chapterIndex);
     } catch (reason) {
       setError(String(reason));
@@ -438,30 +618,13 @@ export default function App() {
     }
   }
 
-  async function persistReaderPosition(index = readerChapterIndex) {
-    if (!readerItem || !readerBook?.chapters.length) return;
-    const chapter = readerBook.chapters[index];
-    if (!chapter) return;
-    try {
-      await invoke<ReadingProgress>("save_reading_progress", {
-        libraryId: readerItem.id,
-        locator: chapter.id,
-        fraction: (index + 1) / readerBook.chapters.length,
-      });
-    } catch (reason) {
-      setError(String(reason));
-    }
-  }
-
   function changeReaderChapter(nextIndex: number) {
     if (!readerBook) return;
     const bounded = Math.min(readerBook.chapters.length - 1, Math.max(0, nextIndex));
     setReaderChapterIndex(bounded);
-    void persistReaderPosition(bounded);
   }
 
   function closeReader() {
-    void persistReaderPosition();
     setReaderItem(null);
     setReaderBook(null);
     setReaderChapterIndex(0);
@@ -477,22 +640,22 @@ export default function App() {
       <>
         <section className="hero glass">
           <div>
-            <span className="eyebrow">HIGH PERFORMANCE E-BOOK CLIENT</span>
-            <h2>检索、下载与本地书架，<br />现在开始真正连起来。</h2>
-            <p>React 只负责界面，搜索、解析、账户与分段下载继续交给 Rust Core。公开数据源可以直接用，需要认证的数据源从左上角账户页连接。</p>
+            <span className="eyebrow">LUMINASHELF · 星书</span>
+            <h2>把想读的书，<br />留在自己的书架。</h2>
+            <p>搜索书目，导入手机里的电子书，随时接着上次的位置阅读。未完成的下载会保留，重新打开后可以继续。</p>
             <button className="primary-button hero-action" onClick={() => setPage("search")}>开始搜索</button>
           </div>
           <div className="orb"><span>Z</span></div>
         </section>
 
         <section className="cards">
-          <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>统一网络栈在线</small></article>
+          <article className="card glass"><span>CORE</span><strong>{status?.networkStack ?? "Rust + Tokio"}</strong><small>{status?.rustCore ? "网络服务已连接" : "正在连接核心服务"}</small></article>
           <article className="card glass"><span>LIBRARY</span><strong>{libraryItems.length}</strong><small>已持久化本地书籍</small></article>
-          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 当前任务</small></article>
+          <article className="card glass"><span>DOWNLOADS</span><strong>{completedCount}/{downloadTasks.length}</strong><small>已完成 / 持久化任务</small></article>
         </section>
 
         <section className="workspace glass">
-          <div className="workspace-title"><div><span className="eyebrow">PROVIDERS</span><h3>数据源状态</h3></div><span className="status-dot">● READY</span></div>
+          <div className="workspace-title"><div><span className="eyebrow">PROVIDERS</span><h3>数据源状态</h3></div><span className="status-dot">{status?.rustCore ? "● READY" : "CONNECTING"}</span></div>
           <div className="provider-list">
             {providers.map((provider) => (
               <div className="provider-row" key={provider.id}>
@@ -515,21 +678,25 @@ export default function App() {
       <>
         <section className="search-panel glass">
           <form className="search-form" onSubmit={submitSearch}>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="书名、作者、关键词…" autoFocus />
-            <select value={selectedProvider} onChange={(event) => changeProvider(event.target.value)}>
+            <input aria-label="搜索电子书" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="书名、作者、关键词…" autoFocus />
+            <select aria-label="数据源" value={selectedProvider} onChange={(event) => changeProvider(event.target.value)}>
               {providers.filter((provider) => provider.capabilities.searchable).map((provider) => (
                 <option value={provider.id} key={provider.id}>{provider.name}</option>
               ))}
             </select>
             <button className="primary-button" disabled={searching || !query.trim() || providerNeedsLogin}>{searching ? "搜索中…" : "搜索"}</button>
           </form>
-          <div className="search-hint">每页 {settings.searchPageSize} 项 · Provider 请求由 Rust Core 发起</div>
+          <div className="search-hint">每页 {settings.searchPageSize} 项 · 支持书名、作者和关键词</div>
+          {recentSearches.length > 0 ? <div className="recent-searches" aria-label="最近搜索">
+            {recentSearches.map((text) => <button className="ghost-button small" key={text} onClick={() => setQuery(text)}>{text}</button>)}
+            <button className="ghost-button small" onClick={() => { setRecentSearches([]); localStorage.removeItem("luminashelf.recentSearches"); }}>清空历史</button>
+          </div> : null}
         </section>
 
         {providerNeedsLogin ? (
           <section className="auth-gate glass">
             <span className="auth-gate-mark">○</span>
-            <div><span className="eyebrow">AUTHENTICATION REQUIRED</span><h3>先连接 Z-Library 账户</h3><p>这个 Provider 的搜索、详情和下载需要 EAPI Session。账户入口已经从主导航移到左上角，不会占用主要工作区。</p></div>
+            <div><span className="eyebrow">ACCOUNT</span><h3>先连接 Z-Library 账户</h3><p>登录后可以搜索和下载书籍，也可以切换到无需登录的公开书源。</p></div>
             <button className="primary-button" onClick={() => setPage("account")}>前往账户</button>
           </section>
         ) : searchResult ? (
@@ -544,8 +711,9 @@ export default function App() {
             <div className="book-grid">
               {searchResult.items.map((book) => {
                 const format = preferredFormat(book);
-                const key = `${selectedProvider}:${book.id}`;
-                const task = downloads[key];
+                const key = format ? taskKey(selectedProvider, book.id, format) : "";
+                const task = key ? downloads[key] : undefined;
+                const activeTask = task && ["queued", "connecting", "downloading", "verifying"].includes(task.state);
                 return (
                   <article className="book-card glass" key={book.id}>
                     <button className="cover-button" onClick={() => void openDetails(book)} aria-label={`查看 ${book.title} 详情`}>
@@ -561,8 +729,8 @@ export default function App() {
                       </div>
                       <div className="book-actions">
                         <button className="ghost-button" onClick={() => void openDetails(book)}>详情</button>
-                        <button className="primary-button small" disabled={!format || task?.state === "downloading" || task?.state === "queued"} onClick={() => void startDownload(book)}>
-                          {task?.state === "completed" ? "已下载" : task?.state === "downloading" || task?.state === "queued" ? "下载中" : "下载"}
+                        <button className="primary-button small" disabled={!format || Boolean(activeTask)} onClick={() => void startDownload(book)}>
+                          {task?.state === "completed" ? "已下载" : activeTask ? "下载中" : task ? "继续" : "下载"}
                         </button>
                       </div>
                     </div>
@@ -572,7 +740,7 @@ export default function App() {
             </div>
           </section>
         ) : (
-          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>搜索结果会直接使用 Rust Provider 返回的数据，不再是演示卡片。</p></section>
+          <section className="empty-state glass"><span>⌕</span><h3>从一本书开始</h3><p>输入书名或作者，找到下一本想读的书。</p></section>
         )}
       </>
     );
@@ -581,21 +749,29 @@ export default function App() {
   function renderDownloads() {
     return (
       <section className="workspace glass">
-        <div className="workspace-title"><div><span className="eyebrow">RUST DOWNLOADER</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
+        <div className="workspace-title"><div><span className="eyebrow">PERSISTENT DOWNLOAD QUEUE</span><h3>下载任务</h3></div><span className="status-dot">{downloadTasks.length} TASKS</span></div>
         {downloadTasks.length === 0 ? (
           <div className="inline-empty">还没有下载任务。从搜索页选择一本书即可开始。</div>
         ) : (
           <div className="download-list">
             {downloadTasks.map((task) => {
               const progress = taskProgress(task);
+              const canResume = ["paused", "failed", "cancelled"].includes(task.state);
+              const isActive = ["queued", "connecting", "downloading", "verifying"].includes(task.state);
               return (
                 <article className="download-row" key={task.key}>
                   <div className="download-head">
                     <div><strong>{task.title}</strong><small>{task.format.toUpperCase()} · {task.providerId}</small></div>
-                    <span className={`task-state ${task.state}`}>{task.state === "completed" ? "已完成" : task.state === "failed" ? "失败" : task.state === "queued" ? "排队" : `${progress}%`}</span>
+                    <span className={`task-state ${task.state}`}>{taskLabel(task)}</span>
                   </div>
                   <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
-                  <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.path ?? task.error ?? "Rust segmented downloader"}</span></div>
+                  <div className="download-foot"><span>{formatBytes(task.downloadedBytes)} / {formatBytes(task.totalBytes)}</span><span>{task.error ?? task.path ?? (task.state === "paused" ? "上次退出时未完成，可继续" : "Rust segmented downloader")}</span></div>
+                  <div className="download-actions">
+                    {["queued", "connecting", "downloading"].includes(task.state) ? <button className="ghost-button" disabled={taskActions.has(task.key)} onClick={() => void controlDownload(task, "pause_download")}>暂停</button> : null}
+                    {["queued", "connecting", "downloading"].includes(task.state) ? <button className="ghost-button danger" disabled={taskActions.has(task.key)} onClick={() => void controlDownload(task, "cancel_download")}>取消</button> : null}
+                    {canResume ? <button className="primary-button small" disabled={taskActions.has(task.key)} onClick={() => void retryDownload(task)}>继续</button> : null}
+                    {!isActive ? <button className="ghost-button" onClick={() => void removeDownload(task)}>移除记录</button> : null}
+                  </div>
                 </article>
               );
             })}
@@ -610,14 +786,27 @@ export default function App() {
       <>
         <section className="search-panel glass">
           <div className="library-toolbar">
-            <input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="本地书库目录，例如 D:\\Books 或 /Users/me/Books" />
-            <button className="primary-button" disabled={libraryLoading} onClick={() => void scanLibrary()}>{libraryLoading ? "扫描中…" : "扫描书库"}</button>
+            <button className="primary-button" disabled={libraryLoading} onClick={() => void importLibrary()}>{libraryLoading ? "处理中…" : "导入电子书"}</button>
+            <input aria-label="筛选书库" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="筛选书名、作者或格式…" />
           </div>
-          <div className="search-hint">{settings.recursiveLibraryScan ? "递归扫描子目录" : "仅扫描当前目录"} · 内置阅读器支持 EPUB / TXT / PDF</div>
+          {status?.platform !== "android" ? <div className="library-toolbar library-scan">
+            <input aria-label="书库目录" value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="也可选择已有书库目录" />
+            <button className="ghost-button" disabled={libraryLoading} onClick={() => void chooseFolder()}>选择目录</button>
+            <button className="ghost-button" disabled={libraryLoading || !settings.libraryDirectory.trim()} onClick={() => void scanLibrary()}>扫描书库</button>
+          </div> : null}
+          <div className="library-toolbar library-scan">
+            <select aria-label="书库排序" value={librarySort} onChange={(event) => setLibrarySort(event.target.value)}>
+              <option value="recent">最近添加</option><option value="title">按书名</option><option value="author">按作者</option>
+            </select>
+            <button className="ghost-button" disabled={libraryLoading} onClick={() => void backupLibrary(false)}>导出备份</button>
+            <button className="ghost-button" disabled={libraryLoading} onClick={() => void backupLibrary(true)}>恢复备份</button>
+          </div>
+          <div className="search-hint">导入会保留原文件 · 内置阅读器支持 EPUB / TXT / PDF · 书库和阅读位置自动保存</div>
+          {importMessage ? <div className="search-hint" role="status">{importMessage}</div> : null}
         </section>
         {libraryItems.length > 0 ? (
           <section className="library-grid">
-            {libraryItems.map((item) => {
+            {libraryItems.filter((item) => `${item.title} ${item.authors.join(" ")} ${item.format}`.toLowerCase().includes(libraryQuery.trim().toLowerCase())).sort((a,b) => librarySort === "title" ? a.title.localeCompare(b.title) : librarySort === "author" ? a.authors.join("").localeCompare(b.authors.join("")) : 0).map((item) => {
               const readable = item.format === "epub" || item.format === "txt" || item.format === "pdf";
               return (
                 <article className="library-card glass" key={`${item.id}:${item.path}`}>
@@ -627,6 +816,7 @@ export default function App() {
                     <p>{item.authors.join(" · ") || "本地文件"}</p>
                     <small>{formatBytes(item.sizeBytes)} · {item.path}</small>
                     <div className="library-card-actions">
+                      <button className="ghost-button small" aria-label={`管理 ${item.title}`} onClick={() => setManageItem(item)}>管理</button>
                       <button className="primary-button small" disabled={!readable || readerLoading} onClick={() => void openLibraryItem(item)}>
                         {readerLoading ? "打开中…" : readable ? "阅读 / 继续阅读" : "暂不支持阅读"}
                       </button>
@@ -637,7 +827,7 @@ export default function App() {
             })}
           </section>
         ) : (
-          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>填写目录后扫描，或者从搜索页下载一本书。书架会持久化保存，下次启动自动恢复。</p></section>
+          <section className="empty-state glass"><span>▤</span><h3>本地书架还是空的</h3><p>点击「导入电子书」，或从搜索页下载一本书。重启后仍可继续阅读。</p></section>
         )}
       </>
     );
@@ -647,7 +837,7 @@ export default function App() {
     return (
       <div className="settings-stack">
         <section className="settings-intro glass">
-          <div><span className="eyebrow">APP PREFERENCES</span><h2>偏好与底层能力，都集中在这里。</h2><p>设置不是主要工作流，因此从主导航中独立出来。搜索、下载、本地书库、网络与核心配置都统一放在这个页面。</p></div>
+          <div><span className="eyebrow">APP PREFERENCES</span><h2>偏好与底层能力，都集中在这里。</h2><p>设置不是主要工作流，因此从主导航中独立出来。搜索、下载、本地书库、网络与核心配置统一放在这个页面。</p></div>
           <button className="ghost-button" onClick={resetSettings}>恢复默认</button>
         </section>
 
@@ -660,16 +850,20 @@ export default function App() {
 
           <article className="setting-card glass">
             <span className="eyebrow">DOWNLOAD & LIBRARY</span><h3>下载与书库</h3>
-            <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
-            <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
-            <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+            {status?.platform === "android" ? (
+              <p className="search-hint">下载和导入的书籍保存在应用书库，可离线阅读。在「书库」点「导入电子书」选择手机文件。卸载应用会移除应用内保存的书籍与进度。</p>
+            ) : (<>
+              <label className="stacked"><span>下载目录<small>留空使用系统 Downloads/LuminaShelf</small></span><input value={settings.downloadDirectory} onChange={(event) => setSettings((current) => ({ ...current, downloadDirectory: event.target.value }))} placeholder="默认系统下载目录" /></label>
+              <label className="stacked"><span>书库目录<small>用于本地扫描</small></span><input value={settings.libraryDirectory} onChange={(event) => setSettings((current) => ({ ...current, libraryDirectory: event.target.value }))} placeholder="选择或填写本地书库目录" /></label>
+              <label className="toggle-row"><span>递归扫描<small>同时扫描所有子目录</small></span><button className={`toggle ${settings.recursiveLibraryScan ? "on" : ""}`} onClick={() => setSettings((current) => ({ ...current, recursiveLibraryScan: !current.recursiveLibraryScan }))}><i /></button></label>
+            </>)}
           </article>
 
           <NetworkSettings networkStack={status?.networkStack ?? "Tokio · Reqwest · Hickory"} />
 
           <article className="setting-card glass">
             <span className="eyebrow">CORE</span><h3>关于 LuminaShelf</h3>
-            <div className="readout"><span>版本</span><strong>v{status?.version ?? "0.5.0"}</strong></div>
+            <div className="readout"><span>版本</span><strong>v{status?.version ?? "…"}</strong></div>
             <div className="readout"><span>架构</span><strong>Tauri 2 + React + Rust</strong></div>
             <div className="readout"><span>Core 状态</span><strong>{status?.rustCore ? "Online" : "Connecting"}</strong></div>
           </article>
@@ -683,8 +877,8 @@ export default function App() {
       <aside className="sidebar glass">
         <div className="brand-bar">
           <button className="brand" onClick={() => setPage("home")} aria-label="返回总览">
-            <div className="brand-mark">Z</div>
-            <div className="brand-copy"><strong>LuminaShelf</strong><span>Rust library client</span></div>
+            <div className="brand-mark">L</div>
+            <div className="brand-copy"><strong>LuminaShelf</strong><span>星书 · 随时继续阅读</span></div>
           </button>
           <div className="utility-buttons">
             <button className={page === "account" ? "active" : ""} onClick={() => setPage("account")} aria-label="账户" title="账户"><span className={zlibraryStatus?.signedIn ? "utility-online" : ""}>○</span></button>
@@ -693,7 +887,7 @@ export default function App() {
         </div>
         <nav className="primary-nav">
           {nav.map((item) => (
-            <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}>
+            <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}>
               <span className="glyph">{item.glyph}</span><span>{item.label}</span>
             </button>
           ))}
@@ -710,10 +904,10 @@ export default function App() {
             </div>
             <div><span className="eyebrow">LUMINASHELF / {active.eyebrow}</span><h1>{active.label}</h1></div>
           </div>
-          {page === "settings" || page === "account" ? <button className="ghost-button header-back" onClick={() => setPage("home")}>← 返回总览</button> : <div className="version-chip">v{status?.version ?? "0.5.0"}</div>}
+          {page === "settings" || page === "account" ? <button className="ghost-button header-back" onClick={() => setPage("home")}>← 返回总览</button> : <div className="version-chip">v{status?.version ?? "…"}</div>}
         </header>
 
-        {error ? <section className="notice error"><span>Core bridge</span><strong>{error}</strong><button onClick={() => setError(null)}>×</button></section> : null}
+        {error ? <section className="notice error" role="alert"><span>Core bridge</span><strong>{error}</strong><button onClick={() => setError(null)}>×</button></section> : null}
 
         {page === "home" ? renderHome() : null}
         {page === "search" ? renderSearch() : null}
@@ -724,8 +918,10 @@ export default function App() {
       </main>
 
       <nav className="mobile-nav glass">
-        {nav.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><span>{item.glyph}</span><small>{item.label}</small></button>)}
+        {nav.map((item) => <button key={item.id} aria-label={item.label} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><span>{item.glyph}</span><small>{item.label}</small></button>)}
       </nav>
+
+      {manageItem ? <LibraryActions item={manageItem} onClose={() => setManageItem(null)} onChanged={(item) => { setLibraryItems((current) => item ? current.map((value) => value.id === item.id ? item : value) : current.filter((value) => value.id !== manageItem.id)); setManageItem(null); }} /> : null}
 
       {selectedBook ? (
         <div className="detail-backdrop" onClick={() => setSelectedBook(null)}>
@@ -737,13 +933,21 @@ export default function App() {
             <p className="detail-author">{selectedBook.authors.join(" · ") || "作者未知"}</p>
             <div className="detail-facts"><span>{selectedBook.year ?? "年份未知"}</span><span>{selectedBook.language?.toUpperCase() ?? "语言未知"}</span><span>{preferredFormat(selectedBook)?.toUpperCase() ?? "格式未知"}</span></div>
             <div className="detail-description">{detailsLoading ? "正在从 Core 获取详情…" : bookDetails?.description || "当前 Provider 没有提供简介。"}</div>
-            <button className="primary-button wide" disabled={!preferredFormat(selectedBook)} onClick={() => void startDownload(selectedBook)}>下载到 LuminaShelf</button>
+            <label className="download-format-choice">下载格式
+              <select aria-label="下载格式" value={downloadFormat} onChange={(event) => setDownloadFormat(event.target.value as BookFormat)}>
+                {Array.from(new Set([selectedBook.format, ...selectedBook.availableFormats].filter((format): format is BookFormat => Boolean(format) && format !== "other"))).map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+              </select>
+            </label>
+            <button className="primary-button wide" disabled={!downloadFormat || ["queued", "connecting", "downloading", "verifying"].includes(downloads[taskKey(selectedProvider, selectedBook.id, downloadFormat || "other")]?.state ?? "")}
+              onClick={() => downloadFormat && void startDownload(selectedBook, downloadFormat)}>加入下载队列</button>
           </aside>
         </div>
       ) : null}
 
       {readerItem && readerBook ? (
         <ReaderView
+          libraryId={readerItem.id}
+          initialScroll={readerInitialScroll}
           book={readerBook}
           bookPath={readerItem.path}
           fallbackTitle={readerItem.title}

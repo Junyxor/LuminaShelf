@@ -2,8 +2,12 @@ name: Rust Core CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/usable-release"]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   core:
@@ -15,5 +19,5 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt -p lumina-core -- --check
-      - run: cargo test -p lumina-core
-      - run: cargo clippy -p lumina-core --all-targets -- -D warnings
+      - run: cargo test --locked -p lumina-core
+      - run: cargo clippy --locked -p lumina-core --all-targets -- -D warnings

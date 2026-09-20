@@ -150,6 +150,7 @@
 
   .pdf-toolbar {
     flex-wrap: wrap;
+    padding-top: max(12px, env(safe-area-inset-top));
   }
 
   .pdf-title {
@@ -163,5 +164,6 @@
 
   .pdf-footer {
     padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 }

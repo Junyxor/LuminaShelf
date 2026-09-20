@@ -1,0 +1,40 @@
+import { expect } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+
+export async function testLibraryManagement({ page, adb, tapNode, screenshot, output }) {
+  const invoke = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
+  const original = await invoke("library_items");
+  const txt = original.find((item) => item.title === "Lumina TXT");
+  await page.getByRole("button", { name: "管理 Lumina TXT", exact: true }).first().click();
+  await page.getByRole("textbox", { name: "编辑书名" }).fill("Edited Android Book");
+  await page.getByRole("textbox", { name: "编辑作者" }).fill("Reader、Writer");
+  await page.getByRole("button", { name: "保存信息" }).click();
+  await expect(page.getByRole("heading", { name: "Edited Android Book" })).toBeVisible();
+  const edited = (await invoke("library_items")).find((item) => item.id === txt.id);
+  expect(edited.authors).toEqual(["Reader", "Writer"]);
+  await page.getByRole("button", { name: "导出备份", exact: true }).click();
+  await tapNode(new RegExp('resource-id="android:id/title"[^>]*class="android.widget.EditText"'));
+  adb("shell", "input", "keycombination", "113", "29");
+  const filename = "LuminaBackup-" + Date.now() + ".zip";
+  adb("shell", "input", "text", filename);
+  await tapNode(/text="SAVE"|text="保存"/);
+  await expect(page.getByRole("status")).toContainText("已导出", { timeout: 30000 });
+  await page.getByRole("button", { name: "管理 Edited Android Book", exact: true }).click();
+  await page.getByRole("button", { name: "从书库移除", exact: true }).click();
+  await page.getByRole("checkbox", { name: "同时删除应用内的文件副本" }).check();
+  await page.getByRole("button", { name: "确认移除", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Edited Android Book" })).toHaveCount(0);
+  expect((await invoke("library_items")).some((item) => item.id === txt.id)).toBe(false);
+  await page.getByRole("button", { name: "恢复备份", exact: true }).click();
+  await tapNode(new RegExp('text="' + filename.replace(".", "\\.") + '"'));
+  await expect(page.getByRole("status")).toContainText("已恢复", { timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Edited Android Book" })).toBeVisible();
+  const restored = (await invoke("library_items")).find((item) => item.title === "Edited Android Book");
+  const bookmarks = await invoke("bookmarks", { libraryId: restored.id });
+  expect(bookmarks.some((bookmark) => bookmark.label === "Android bookmark")).toBe(true);
+  const progress = await invoke("reading_progress", { libraryId: restored.id });
+  expect(JSON.parse(progress.locator).scroll).toBeGreaterThan(0.5);
+  await screenshot("backup-restored");
+  await writeFile(path.join(output, "library-result.json"), JSON.stringify({ passed: true, metadataEdit: true, managedFileDeletion: true, nativeBackupExport: true, restoreBookAndBookmark: true }, null, 2));
+}
