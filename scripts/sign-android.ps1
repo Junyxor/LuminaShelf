@@ -31,7 +31,7 @@ $env:LUMINASHELF_SIGNING_PASSWORD = [Text.Encoding]::UTF8.GetString($secretBytes
 try {
     $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
     if (-not $Output) { $Output = "artifacts/android/LuminaShelf_$($version)_arm64.apk" }
-    $toolsDir = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools") -Directory | Sort-Object Name -Descending | Select-Object -First 1
+    $toolsDir = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools") -Directory | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
     New-Item -ItemType Directory -Path (Split-Path $Output -Parent) -Force | Out-Null
     $alignedInput = Join-Path $env:TEMP ("luminashelf-aligned-" + [Guid]::NewGuid().ToString("N") + ".apk")
     try {
