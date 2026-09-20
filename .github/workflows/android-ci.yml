@@ -98,12 +98,23 @@ jobs:
             exit "$status"
           fi
 
-      - name: Stage APK
+      - name: Locate and stage APKs
         shell: bash
         run: |
-          APK="src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk"
-          test -f "$APK"
-          cp "$APK" LuminaShelf-arm64-v8a-debug.apk
+          APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
+          echo "=== Produced APKs ==="
+          find "$APK_ROOT" -type f -name '*.apk' -print
+
+          ARM64_APK="$(find "$APK_ROOT" -type f -name '*.apk' ! -name '*androidTest*' | grep -Ei '(arm64|arm64-v8a)' | grep -Ei 'debug' | head -n 1)"
+          X86_64_APK="$(find "$APK_ROOT" -type f -name '*.apk' ! -name '*androidTest*' | grep -Ei '(x86_64|x86-64)' | grep -Ei 'debug' | head -n 1)"
+          test -n "$ARM64_APK"
+          test -f "$ARM64_APK"
+          test -n "$X86_64_APK"
+          test -f "$X86_64_APK"
+
+          cp "$ARM64_APK" LuminaShelf-arm64-v8a-debug.apk
+          echo "ARM64_DEBUG_APK=$ARM64_APK" >> "$GITHUB_ENV"
+          echo "X86_64_DEBUG_APK=$X86_64_APK" >> "$GITHUB_ENV"
 
       - name: Enable emulator acceleration
         run: |
@@ -121,7 +132,8 @@ jobs:
           emulator-port: 5556
           disable-animations: true
           script: |
-            adb -s emulator-5556 install src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk
+            test -n "$X86_64_DEBUG_APK"
+            adb -s emulator-5556 install "$X86_64_DEBUG_APK"
             npm run test:android -- --background --library
 
       - name: Upload Android smoke evidence
