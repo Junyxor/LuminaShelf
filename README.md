@@ -63,8 +63,11 @@ R8 release APK 由 `npm run android:release:windows` 生成，并自动使用本
 `.signing/` 中持久保存的稳定发布密钥签名为
 `artifacts/android/LuminaShelf_1.0.0_arm64-release.apk`；密钥目录被 Git 忽略，
 不会进入仓库。可用 `npm run test:android:release` 对已安装的 release APK 做
-原生 SAF/阅读/分享/重启 smoke 验收。Android CI 只生成 debug/test APK 和
-arm64/x86_64 模拟器验收证据，不能把该 CI APK 作为最终 `v1.0.0` 发布包。
+原生 SAF/阅读/分享/重启 smoke 验收。最终 tag 已创建且指向当前提交后，
+`npm run android:release:publish` 会再次核对包名、versionName/versionCode、
+签名、16 KiB 对齐与 SHA-256，再把 release APK 和校验文件上传到同一个 GitHub Release。
+Android CI 只生成 debug/test APK 和 arm64/x86_64 模拟器验收证据，不能把该 CI APK
+作为最终 `v1.0.0` 发布包。
 
 ## 验证
 
