@@ -86,7 +86,8 @@ try {
   await expect(page.getByRole("alert")).toHaveCount(0);
   checks.push("Android native IPC startup and secure-session bootstrap");
   if (process.argv.includes("--background")) {
-    await testBackground({ page, adb, tapNode, screenshot, output });
+    await testBackground({ page, adb, tapNode, screenshot, output, reload: async () => { await restart(); return page; },
+      reopen: async () => { await page?.context().close().catch(() => {}); await launch(); return page; } });
     checks.push("Foreground service, lock-screen transfer, notification pause and HTTP resume");
   }
   await page.getByRole("button", { name: "书库", exact: true }).last().click();

@@ -14,7 +14,7 @@ on:
       tag:
         description: Prerelease tag
         required: false
-        default: v0.6.0-alpha.1
+        default: v1.0.0
 
 permissions:
   contents: write
@@ -51,6 +51,7 @@ jobs:
 
       - name: Initialize Android project
         run: |
+          cargo fetch --locked --target aarch64-linux-android
           npm run tauri -- android init --ci
           node scripts/patch-android-keyring.mjs
 
@@ -121,7 +122,7 @@ jobs:
           disable-animations: true
           script: |
             adb -s emulator-5556 install src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk
-            npm run test:android
+            npm run test:android -- --background --library
 
       - name: Upload Android smoke evidence
         if: always()

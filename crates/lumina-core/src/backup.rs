@@ -1,5 +1,5 @@
 use crate::{
-    library::{import_reader, now_unix_ms},
+    library::{import_reader_with_limit, now_unix_ms},
     Bookmark, LibraryItem, ReadingProgress, StateStore,
 };
 use anyhow::{ensure, Context, Result};
@@ -89,7 +89,11 @@ pub fn restore_backup(
         .context("缺少书库备份清单")?;
     ensure!(metadata.size() <= 8 * 1024 * 1024, "备份清单过大");
     let mut json = Vec::new();
-    metadata.read_to_end(&mut json)?;
+    metadata
+        .by_ref()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut json)?;
+    ensure!(json.len() <= 8 * 1024 * 1024, "解压后的备份清单过大");
     drop(metadata);
     let manifest: Manifest = serde_json::from_slice(&json).context("无法解析备份清单")?;
     ensure!(manifest.version == 1, "不支持的备份版本");
@@ -112,9 +116,14 @@ pub fn restore_backup(
             ensure!(!identities.contains_key(&book.id), "备份包含重复标识");
             let mut input = archive.by_name(&book.entry).context("备份缺少书籍文件")?;
             ensure!(input.size() <= MAX_BOOK_BYTES, "备份中的书籍过大");
-            total = total.checked_add(input.size()).context("备份长度溢出")?;
-            ensure!(total <= MAX_BACKUP_BYTES, "备份内容超过 2 GiB");
-            let mut item = import_reader(&mut input, directory, &format!("import.{extension}"))?;
+            let limit = MAX_BOOK_BYTES.min(MAX_BACKUP_BYTES - total);
+            let mut item = import_reader_with_limit(
+                &mut input,
+                directory,
+                &format!("import.{extension}"),
+                limit,
+            )?;
+            total += item.size_bytes;
             item.title = book.title.chars().take(300).collect();
             item.authors = book
                 .authors

@@ -632,6 +632,7 @@ pub fn run() {
                 .unwrap_or(config_dir);
             let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
             app.manage(state);
+            native_downloads::attach_app(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -678,8 +679,34 @@ pub fn run() {
             downloads::debug_enqueue_download,
             pdf::read_pdf_bytes
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run LuminaShelf");
+        .build(tauri::generate_context!())
+        .expect("failed to build LuminaShelf")
+        .run(|app, event| {
+            #[cfg(target_os = "android")]
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if !app.state::<AppState>().transfers.is_empty() {
+                        api.prevent_exit();
+                    }
+                }
+                tauri::RunEvent::Resumed => {
+                    // Android may destroy the activity after a Recents dismissal
+                    // while the foreground service keeps the Rust runtime alive.
+                    if app.webview_windows().is_empty() {
+                        if let Some(config) = app.config().app.windows.first() {
+                            let result = tauri::WebviewWindowBuilder::from_config(app, config)
+                                .and_then(|builder| builder.build());
+                            if let Err(error) = result {
+                                eprintln!("recreate Android reader window: {error}");
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            #[cfg(not(target_os = "android"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]

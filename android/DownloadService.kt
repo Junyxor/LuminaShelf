@@ -32,7 +32,7 @@ class DownloadService : Service() {
             tasks[id] = Transfer(title, -1, control)
         }
         fun remove(id: String) { tasks.remove(id) }
-        fun update(id: String, title: String, progress: Int, active: Boolean) {
+        @JvmStatic fun update(id: String, title: String, progress: Int, active: Boolean) {
             if (active) tasks.computeIfPresent(id) { _, previous -> previous.copy(title = title, progress = progress) }
             else tasks.remove(id)
             service?.refresh()

@@ -1,4 +1,4 @@
-# 0.6.0 delivery scope
+# 1.0.0 delivery scope
 
 This work continues the request to make the existing LuminaShelf repository usable.
 The baseline for review is 90b4eb4. The daily-driver branch is integrated while the
@@ -29,7 +29,8 @@ Acceptance criteria:
 - Frontend workflow tests and HTTP/SQLite integration tests run in CI with locked
   dependencies.
 
-Limits: no Android foreground-service transfers. Emulator validation does not
+Limits: Android foreground dataSync transfer is implemented; the operating-system
+service window still applies. Emulator validation does not
 replace testing an arm64 physical handset. Desktop sessions remain in memory.
 Network-provider uptime and authenticated Z-Library operations require a live
 endpoint/account. No credentials are included in the smoke tests.

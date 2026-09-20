@@ -9,7 +9,7 @@ export default function LibraryActions({ item, onClose, onChanged }: { item: Ite
   const [deleteFile, setDeleteFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  async function run(action: "save" | "export" | "remove" | "share") {
+  async function run(action: "save" | "export" | "remove" | "share" | "open") {
     setBusy(true); setMessage("");
     try {
       if (action === "save") {
@@ -18,8 +18,8 @@ export default function LibraryActions({ item, onClose, onChanged }: { item: Ite
       } else if (action === "export") {
         const saved = await invoke<boolean>("export_library_book", { id: item.id });
         setMessage(saved ? "已导出副本。" : "已取消导出。");
-      } else if (action === "share") {
-        await invoke("share_library_book", { id: item.id });
+      } else if (action === "share" || action === "open") {
+        await invoke("share_library_book", { id: item.id, openWith: action === "open" });
       } else {
         await invoke("remove_library_item", { id: item.id, deleteFile });
         onChanged(null);
@@ -39,6 +39,7 @@ export default function LibraryActions({ item, onClose, onChanged }: { item: Ite
         <button className="primary-button" disabled={busy || !title.trim()} onClick={() => void run("save")}>保存信息</button>
         <button className="ghost-button" disabled={busy} onClick={() => void run("export")}>导出电子书</button>
         <button className="ghost-button" disabled={busy} onClick={() => void run("share")}>分享</button>
+        <button className="ghost-button" disabled={busy} onClick={() => void run("open")}>用其他应用打开</button>
       </div>
       {confirm ? <div className="remove-confirm">
         <p>移除《{item.title}》及其阅读进度、书签？</p>

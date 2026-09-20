@@ -10,9 +10,10 @@
     "test:desktop": "node scripts/smoke-desktop.mjs",
     "test:android": "node scripts/smoke-android.mjs",
     "tauri": "tauri",
-    "android:init": "tauri android init && node scripts/patch-android-keyring.mjs",
+    "android:init": "cargo fetch --locked --target aarch64-linux-android && tauri android init && node scripts/patch-android-keyring.mjs",
     "android:prepare": "node scripts/patch-android-keyring.mjs",
     "android:apk:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android-windows.ps1",
+    "android:release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android-windows.ps1 -Release",
     "android:apk": "tauri android build --debug --apk --target aarch64"
   },
   "dependencies": {

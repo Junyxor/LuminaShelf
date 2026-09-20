@@ -34,7 +34,7 @@ class TransferUpdateArgs {
 }
 
 @InvokeArg
-class ShareBookArgs { lateinit var path: String; lateinit var mime: String }
+class ShareBookArgs { lateinit var path: String; lateinit var mime: String; var view: Boolean = false }
 
 @TauriPlugin(permissions = [Permission(alias = "notifications", strings = [Manifest.permission.POST_NOTIFICATIONS])])
 class DownloadRuntimePlugin(private val activity: Activity) : Plugin(activity) {
@@ -45,13 +45,12 @@ class DownloadRuntimePlugin(private val activity: Activity) : Plugin(activity) {
             val file = File(args.path).canonicalFile
             require(file.isFile && file.toPath().startsWith(activity.cacheDir.canonicalFile.toPath())) { "文件不在分享缓存中" }
             val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = args.mime
-                putExtra(Intent.EXTRA_STREAM, uri)
+            val intent = Intent(if (args.view) Intent.ACTION_VIEW else Intent.ACTION_SEND).apply {
+                if (args.view) setDataAndType(uri, args.mime) else { type = args.mime; putExtra(Intent.EXTRA_STREAM, uri) }
                 clipData = ClipData.newRawUri(file.name, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            activity.startActivity(Intent.createChooser(intent, "分享电子书"))
+            activity.startActivity(Intent.createChooser(intent, if (args.view) "选择阅读应用" else "分享电子书"))
             invoke.resolve()
         } catch (error: Exception) { invoke.reject("无法分享电子书：${error.message}") }
     }

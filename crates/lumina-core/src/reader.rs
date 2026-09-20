@@ -311,12 +311,20 @@ fn render_safe_node<R: Read + Seek>(
             .attribute("src")
             .filter(|src| !src.contains(':') && !src.starts_with("//"))
         {
-            let name = normalize_zip_path(&directory.join(normalize_toc_href(src)));
+            let relative = percent_decode_path(src.split('#').next().unwrap_or(src));
+            let name = normalize_zip_path(&directory.join(relative));
             if let Ok(mut file) = archive.by_name(&name) {
                 let size = file.size();
                 if size <= 4 * 1024 * 1024 && size <= *image_budget {
                     let mut bytes = Vec::new();
-                    if file.read_to_end(&mut bytes).is_ok() {
+                    let limit = (4 * 1024 * 1024_u64).min(*image_budget);
+                    if file
+                        .by_ref()
+                        .take(limit + 1)
+                        .read_to_end(&mut bytes)
+                        .is_ok()
+                        && bytes.len() as u64 <= limit
+                    {
                         let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
                             Some("image/png")
                         } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -330,7 +338,7 @@ fn render_safe_node<R: Read + Seek>(
                         };
                         if let Some(mime) = mime {
                             use base64::Engine;
-                            *image_budget -= size;
+                            *image_budget -= bytes.len() as u64;
                             output.push_str(&format!(
                                 "<img loading=\"lazy\" alt=\"{}\" src=\"data:{mime};base64,{}\" />",
                                 escape_html(node.attribute("alt").unwrap_or("")),

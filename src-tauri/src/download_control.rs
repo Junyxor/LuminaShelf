@@ -37,6 +37,13 @@ pub struct TransferLease {
 }
 
 impl TransferRegistry {
+    #[cfg(target_os = "android")]
+    pub fn is_empty(&self) -> bool {
+        self.0
+            .lock()
+            .map(|active| active.is_empty())
+            .unwrap_or(false)
+    }
     pub fn begin(&self, id: &str) -> Result<TransferLease, String> {
         let mut active = self
             .0

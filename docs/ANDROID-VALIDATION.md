@@ -1,9 +1,9 @@
-# Android 0.6.0 validation — 2026-09-18
+# Android 1.0.0 validation — 2026-09-18
 
 Delivery target: Android arm64 APK, application ID `app.luminashelf.client`,
-versionName `0.6.0`, versionCode `6000`, minSdk 24, targetSdk 36.
+versionName `1.0.0`, versionCode `6000`, minSdk 24, targetSdk 36.
 
-Delivered file: `artifacts/android/LuminaShelf_0.6.0_arm64-debug.apk`
+Delivered file: `artifacts/android/LuminaShelf_1.0.0_arm64-debug.apk`
 (45,160,924 bytes, approximately 43.1 MiB).
 SHA-256: `36f4820ba11eefcaed3f6e44ed48387db536c2391f8aff10da5623e39dab02cc`.
 APK Signature Scheme v2 verification passed; ZIP and ELF LOAD alignment are 16KB compatible.
@@ -73,6 +73,8 @@ search/download roundtrip is not claimed. Authenticated Z-Library requests requi
 a real account and available endpoint; no user credentials were supplied.
 The download engine is covered by deterministic HTTP integration tests.
 
-This is an installable signed debug/test build, not a store release. Android
-foreground-service downloads, full EPUB visual layout and store signing remain
-separate milestones.
+The release candidate is an installable signed R8 build. Store publication still
+requires the owner's release-channel signing policy and store metadata. Android
+foreground-service downloads are implemented with the system dataSync service;
+Android 15's six-hour service window remains an operating-system limit. Full
+EPUB visual layout is intentionally a safe structural renderer, not a browser.

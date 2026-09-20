@@ -171,9 +171,18 @@ pub fn scan_folder(
 /// storage. A failed copy never appears as an ebook, and existing books are never
 /// overwritten. Original display names, not UUIDs, become library metadata.
 pub fn import_reader(
+    source: impl Read,
+    directory: &Path,
+    display_name: &str,
+) -> Result<LibraryItem> {
+    import_reader_with_limit(source, directory, display_name, 512 * 1024 * 1024)
+}
+
+pub(crate) fn import_reader_with_limit(
     mut source: impl Read,
     directory: &Path,
     display_name: &str,
+    limit: u64,
 ) -> Result<LibraryItem> {
     let name = display_name.rsplit(['/', '\\']).next().unwrap_or("book");
     let format = LibraryFormat::from_path(Path::new(name));
@@ -189,7 +198,10 @@ pub fn import_reader(
             .create_new(true)
             .write(true)
             .open(&partial)?;
-        let length = std::io::copy(&mut source, &mut target)?;
+        let length = std::io::copy(&mut source.by_ref().take(limit + 1), &mut target)?;
+        if length > limit {
+            return Err(anyhow!("电子书超过导入大小限制"));
+        }
         if length == 0 {
             return Err(anyhow!("不能导入空文件：{name}"));
         }

@@ -1,7 +1,7 @@
 # Android 1.0 completion target
 
 The user has explicitly asked for autonomous, continuous implementation toward a
-complete Android application. The 0.6 test build is a checkpoint, not completion.
+complete Android application. The 1.0 implementation is the first complete Android daily-driver baseline.
 Continue implementing and verifying without repeatedly asking to proceed.
 
 1. Foreground download service, lock-screen/background transfer, notification pause,

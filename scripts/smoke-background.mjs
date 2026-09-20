@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export async function testBackground({ page, adb, tapNode, screenshot, output }) {
+export async function testBackground({ page, adb, tapNode, screenshot, output, reload, reopen }) {
   const body = Buffer.alloc(2 * 1024 * 1024, "A");
   let transferred = 0;
   const ranges = [];
@@ -58,9 +58,33 @@ export async function testBackground({ page, adb, tapNode, screenshot, output })
     await expect.poll(async () => (await status()).state, { timeout: 45000, intervals: [500,1000] }).toBe("completed");
     expect(ranges.some(([start]) => start > 0)).toBe(true);
     await expect.poll(() => adb("shell", "dumpsys", "activity", "services", "app.luminashelf.client").includes("isForeground=true")).toBe(false);
+    const restartedUrl = url + "?restart=1";
+    const interrupted = await invoke("debug_enqueue_download", { url: restartedUrl });
+    await expect.poll(async () => (await invoke("download_tasks")).find((item) => item.id === interrupted.id)?.downloadedBytes).toBeGreaterThan(65536);
+    adb("shell", "am", "force-stop", "app.luminashelf.client");
+    page = await reload();
+    const recovered = (await invoke("download_tasks")).find((item) => item.id === interrupted.id);
+    expect(recovered.state).toBe("paused");
+    await invoke("enqueue_download", { providerId: "smoke", bookId: restartedUrl, title: "后台下载测试", format: "txt", downloadDir: null });
+    await expect.poll(async () => (await invoke("download_tasks")).find((item) => item.id === interrupted.id)?.state,
+      { timeout: 45000, intervals: [500,1000] }).toBe("completed");
+    const dismissedUrl = url + "?dismiss=1";
+    const dismissed = await invoke("debug_enqueue_download", { url: dismissedUrl });
+    await expect.poll(async () => (await invoke("download_tasks")).find((item) => item.id === dismissed.id)?.downloadedBytes).toBeGreaterThan(65536);
+    const activities = adb("shell", "dumpsys", "activity", "activities");
+    const taskId = activities.match(/Task\{[^\n]*#(\d+)[^\n]*app\.luminashelf\.client/)?.[1];
+    if (!taskId) throw new Error("Cannot identify test activity task for dismissal");
+    const processId = adb("shell", "pidof", "app.luminashelf.client");
+    const beforeDismiss = transferred;
+    adb("shell", "am", "stack", "remove", taskId);
+    await expect.poll(() => transferred, { timeout: 10000 }).toBeGreaterThan(beforeDismiss + 131072);
+    expect(adb("shell", "pidof", "app.luminashelf.client")).toBe(processId);
+    page = await reopen();
+    await expect.poll(async () => (await invoke("download_tasks")).find((item) => item.id === dismissed.id)?.state,
+      { timeout: 45000, intervals: [500,1000] }).toBe("completed");
     await writeFile(path.join(output, "background-result.json"), JSON.stringify({
       passed: true, backgroundTransfer: true, notificationPause: true,
-      resumedFromPartial: partial, totalBytes: body.length, requestedRanges: ranges,
+      resumedFromPartial: partial, totalBytes: body.length, requestedRanges: ranges, processDeathRecovery: true, activityDismissalRecovery: true,
     }, null, 2));
   } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 }

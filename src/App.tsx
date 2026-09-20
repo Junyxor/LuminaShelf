@@ -261,11 +261,12 @@ export default function App() {
   const [pdfItem, setPdfItem] = useState<LibraryItem | null>(null);
 
   useEffect(() => {
-    if (status?.platform !== "android" || (page === "home" && !readerItem && !pdfItem && !selectedBook)) return;
+    if (status?.platform !== "android" || (page === "home" && !readerItem && !pdfItem && !selectedBook && !manageItem)) return;
     let disposed = false;
     let stop: (() => Promise<void>) | undefined;
     void onBackButtonPress(() => {
-      if (pdfItem) setPdfItem(null);
+      if (manageItem) setManageItem(null);
+      else if (pdfItem) setPdfItem(null);
       else if (readerItem) closeReader();
       else if (selectedBook) setSelectedBook(null);
       else setPage("home");
@@ -274,7 +275,7 @@ export default function App() {
       else stop = () => listener.unregister();
     }).catch((reason) => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; void stop?.(); };
-  }, [status?.platform, page, readerItem, readerBook, readerChapterIndex, pdfItem, selectedBook]);
+  }, [status?.platform, page, readerItem, readerBook, readerChapterIndex, pdfItem, selectedBook, manageItem]);
 
   useEffect(() => {
     try { localStorage.setItem("luminashelf.settings", JSON.stringify(settings)); } catch { /* Storage may be unavailable. */ }

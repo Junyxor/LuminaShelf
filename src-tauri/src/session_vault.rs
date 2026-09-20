@@ -117,7 +117,7 @@ pub fn clear() -> Result<bool, String> {
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "system" fn Java_app_luminashelf_client_MainActivity_initNdkContext(
-    env: jni::JNIEnv,
+    mut env: jni::JNIEnv,
     _class: jni::objects::JObject,
     context: jni::objects::JObject,
 ) {
@@ -139,4 +139,5 @@ pub extern "system" fn Java_app_luminashelf_client_MainActivity_initNdkContext(
         }
         Err(_) => None,
     });
+    super::native_downloads::activity_ready(&mut env);
 }

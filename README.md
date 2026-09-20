@@ -1,9 +1,9 @@
 # LuminaShelf · 星书
 
 面向 Android 的电子书应用，使用 Tauri 2 + React 界面和 Rust 核心。
-0.6.0 将搜索、可恢复下载、本地书库与 EPUB / TXT / PDF 阅读整合到手机端。
+1.0.0 将搜索、可恢复下载、本地书库与 EPUB / TXT / PDF 阅读整合到手机端。
 
-本地交付包：`artifacts/android/LuminaShelf_0.6.0_arm64-debug.apk`。
+发行构建通过 `npm run android:release:windows` 生成；本地调试包仍位于 `artifacts/android/`。
 Android 15 模拟器验收记录见 [docs/ANDROID-VALIDATION.md](docs/ANDROID-VALIDATION.md)。
 
 ## 手机上的主要流程
@@ -58,9 +58,10 @@ npm run android:apk:windows
 ./scripts/build-android-windows.ps1 -Targets aarch64,x86_64
 ```
 
-APK 输出：`src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk`。
-这是签名调试包，适合安装测试。正式商店发布需要发布签名和发行配置。
-现有 Android CI 可生成 arm64 APK artifact；仅明确选择发布时才创建 prerelease。
+调试 APK 输出在 `src-tauri/gen/android/app/build/outputs/apk/arm64/debug/`；
+R8 release APK 由 `npm run android:release:windows` 生成。签名密钥保存在本机
+`.signing/`（被 Git 忽略），不会进入仓库。Android CI 生成 arm64/x86_64
+构建并运行模拟器验收。
 
 ## 验证
 
@@ -86,11 +87,13 @@ npm run test:android
 
 ## 当前边界
 
-- 尚无 Android 前台下载服务；系统终止应用后传输停止，下次打开可继续。
+- Android 前台 dataSync 下载服务已接入；系统仍可能受 Android 15 的六小时窗口限制，
+  超时会暂停任务并可继续。
 - EPUB 当前侧重文本与章节阅读，尚未完整呈现插图、媒体和原版排版。
 - MOBI / AZW3 / CBZ / DjVu 可导入登记，尚无内置阅读器。
 - 公开与认证书源依赖外部服务；不包含 HTML/JS 反机器人挑战绕过。
-- 「移除记录」仅删除任务历史，不删除已下载书籍或保留的断点数据。
-- 桌面代码保留兼容，但本次交付和验收目标是 Android APK。
+- 「移除记录」仅删除下载任务历史；书库管理可以编辑、分享、用其他应用打开、
+  导出、备份恢复，且会明确区分是否删除应用内文件。
+- 桌面代码保留兼容，但本次交付和验收目标是 Android APK。支持前台下载服务、书签、备份恢复、分享和外部应用打开。
 
 验收范围见 [docs/DELIVERY.md](docs/DELIVERY.md)。

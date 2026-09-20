@@ -156,7 +156,7 @@ pub(super) async fn enqueue_download(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<PersistedDownloadTask, String> {
-    let (mut task, lease) = prepare_download(
+    let (mut task, mut lease) = prepare_download(
         &app,
         &state,
         provider_id,
@@ -176,7 +176,7 @@ pub(super) async fn enqueue_download(
     let snapshot = task.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        if let Err(error) = execute_download(&app, &state, task.clone(), lease).await {
+        if let Err(error) = execute_download(&app, &state, task.clone(), &mut lease).await {
             if let Ok(tasks) = state.state_store.list_download_tasks() {
                 if let Some(mut latest) = tasks.into_iter().find(|item| item.id == task.id) {
                     if latest.state.is_active() {
@@ -185,6 +185,14 @@ pub(super) async fn enqueue_download(
                         let _ = publish(&app, &state, &latest);
                     }
                 }
+            }
+        }
+        drop(lease);
+        #[cfg(target_os = "android")]
+        if state.transfers.is_empty() && app.webview_windows().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if state.transfers.is_empty() && app.webview_windows().is_empty() {
+                app.exit(0);
             }
         }
     });
@@ -203,7 +211,7 @@ pub(super) async fn download_book(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<DownloadReceipt, String> {
-    let (task, lease) = prepare_download(
+    let (task, mut lease) = prepare_download(
         &app,
         &state,
         provider_id,
@@ -213,7 +221,7 @@ pub(super) async fn download_book(
         download_dir,
     )?;
     native_downloads::start(&app, &task).await?;
-    execute_download(&app, &state, task, lease).await
+    execute_download(&app, &state, task, &mut lease).await
 }
 
 struct ServiceLease {
@@ -231,7 +239,7 @@ async fn execute_download(
     app: &AppHandle,
     state: &AppState,
     mut task: PersistedDownloadTask,
-    mut lease: TransferLease,
+    lease: &mut TransferLease,
 ) -> Result<DownloadReceipt, String> {
     let _service = ServiceLease {
         app: app.clone(),

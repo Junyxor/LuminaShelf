@@ -31,7 +31,7 @@ beforeEach(() => {
   books = [book];
   bridge.invoke.mockImplementation(async (command: string) => {
     switch (command) {
-      case "core_status": return { name: "LuminaShelf", version: "0.6.0", rustCore: true, networkStack: "Rust", platform: "windows" };
+      case "core_status": return { name: "LuminaShelf", version: "1.0.0", rustCore: true, networkStack: "Rust", platform: "windows" };
       case "provider_descriptors": return ["public", "second"].map((id) => ({ id, name: id, capabilities: { searchable: true, downloadable: true, authenticated: false } }));
       case "zlibrary_restore_session": return { status: { signedIn: false, secureSessionStorage: false } };
       case "download_tasks": return tasks;
@@ -126,7 +126,7 @@ describe("library and download workflows across the IPC boundary", () => {
 it("uses Android file import without desktop directory inputs and registers Back", async () => {
   const original = bridge.invoke.getMockImplementation()!;
   bridge.invoke.mockImplementation(async (command: string, args: unknown) => command === "core_status"
-    ? { name: "LuminaShelf", version: "0.6.0", rustCore: true, networkStack: "Rust", platform: "android" }
+    ? { name: "LuminaShelf", version: "1.0.0", rustCore: true, networkStack: "Rust", platform: "android" }
     : original(command, args));
   render(<App />);
   await openPage("书库");

@@ -104,6 +104,7 @@ export default function ReaderView({
       .catch((reason) => setChapterError(`进度保存失败：${String(reason)}`));
   }
   function changeChapter(index: number) {
+    if (index === chapterIndex) return;
     savePosition();
     positionReady.current = false;
     pendingScroll.current = 0;

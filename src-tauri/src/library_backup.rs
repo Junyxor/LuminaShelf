@@ -13,6 +13,7 @@ pub(super) async fn share_library_book(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
+    open_with: Option<bool>,
 ) -> Result<(), String> {
     let item = state
         .state_store
@@ -21,7 +22,7 @@ pub(super) async fn share_library_book(
         .ok_or("书籍不存在")?;
     let cache = app
         .path()
-        .cache_dir()
+        .app_cache_dir()
         .map_err(|error| error.to_string())?
         .join("shared-books");
     tokio::fs::create_dir_all(&cache)
@@ -46,7 +47,7 @@ pub(super) async fn share_library_book(
         "txt" => "text/plain",
         _ => "application/octet-stream",
     };
-    super::native_downloads::share(&app, &path, mime).await
+    super::native_downloads::share(&app, &path, mime, open_with.unwrap_or(false)).await
 }
 
 struct Temporary(PathBuf);

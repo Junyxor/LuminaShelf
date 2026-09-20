@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import "./patch-tauri-lifecycle.mjs";
 
 const javaRoot = path.resolve("src-tauri/gen/android/app/src/main/java");
 
@@ -71,6 +72,9 @@ for (const name of ["DownloadService.kt", "DownloadRuntimePlugin.kt"]) {
 }
 const manifestPath = path.resolve("src-tauri/gen/android/app/src/main/AndroidManifest.xml");
 let manifest = await fs.readFile(manifestPath, "utf8");
+if (!manifest.includes("android:enableOnBackInvokedCallback=")) {
+  manifest = manifest.replace("<application", '<application android:enableOnBackInvokedCallback="true"');
+}
 for (const permission of ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "POST_NOTIFICATIONS", "WAKE_LOCK"]) {
   if (!manifest.includes(`android.permission.${permission}"`)) {
     manifest = manifest.replace("<application", `<uses-permission android:name="android.permission.${permission}" />\n    <application`);

@@ -105,9 +105,9 @@ fn epub_formatting_preserves_structure_and_images_but_removes_active_content() {
     let temp = tempfile::tempdir().unwrap();
     let zip = archive(&[
         ("META-INF/container.xml", br#"<container><rootfiles><rootfile full-path="OPS/package.opf"/></rootfiles></container>"#),
-        ("OPS/package.opf", br#"<package><metadata><title>Safe book</title></metadata><manifest><item id="c" href="chapter.xhtml"/></manifest><spine><itemref idref="c"/></spine></package>"#),
-        ("OPS/chapter.xhtml", br#"<html><body><h1 onclick="steal()">Heading</h1><p>A <strong>bold</strong> paragraph.</p><script>attack()</script><iframe src="https://evil.test"/><img src="image.png" onerror="attack()" alt="Art"/><img src="https://evil.test/track.png"/><a href="javascript:attack()">Link text</a></body></html>"#),
-        ("OPS/image.png", b"\x89PNG\r\n\x1a\nexample"),
+        ("OPS/package.opf", br#"<package><metadata><title>Safe book</title></metadata><manifest><item id="c" href="Text/chapter.xhtml"/></manifest><spine><itemref idref="c"/></spine></package>"#),
+        ("OPS/Text/chapter.xhtml", br#"<html><body><h1 onclick="steal()">Heading</h1><p>A <strong>bold</strong> paragraph.</p><script>attack()</script><iframe src="https://evil.test"/><img src="../Images/picture.png" onerror="attack()" alt="Art"/><img src="https://evil.test/track.png"/><a href="javascript:attack()">Link text</a></body></html>"#),
+        ("OPS/Images/picture.png", b"\x89PNG\r\n\x1a\nexample"),
     ]);
     let path = temp.path().join("book.epub");
     std::fs::write(&path, zip).unwrap();
