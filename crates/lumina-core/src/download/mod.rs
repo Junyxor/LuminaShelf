@@ -177,7 +177,7 @@ impl SegmentedDownloader {
             .no_gzip()
             .no_brotli()
             .no_deflate()
-            .user_agent("LuminaShelf/0.5 downloader")
+            .user_agent(format!("LuminaShelf/{} downloader", env!("CARGO_PKG_VERSION")))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
         Ok(Self::new(client, config))

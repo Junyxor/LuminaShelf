@@ -183,7 +183,7 @@ impl ProbeEngine {
             .pool_max_idle_per_host(2)
             .tcp_nodelay(true)
             .redirect(Policy::none())
-            .user_agent("LuminaShelf/0.2")
+            .user_agent(format!("LuminaShelf/{}", env!("CARGO_PKG_VERSION")))
             .resolve_to_addrs(host, &socket_overrides)
             .build()?;
 

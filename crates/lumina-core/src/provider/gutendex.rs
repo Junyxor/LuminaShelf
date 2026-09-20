@@ -24,7 +24,7 @@ impl GutendexProvider {
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .pool_max_idle_per_host(6)
             .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 provider-gutendex")
+            .user_agent(format!("LuminaShelf/{} provider-gutendex", env!("CARGO_PKG_VERSION")))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
         Self::with_client(client, Url::parse("https://gutendex.com/books/")?)

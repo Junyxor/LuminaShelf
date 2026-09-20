@@ -340,10 +340,11 @@ async fn execute_download(
         ControlledDownload::Finished(Err(error)) => {
             task.state = DownloadState::Failed;
             // Network errors may include temporary URLs. Do not persist their query strings.
-            task.error = Some("下载失败，请检查网络和账户后重试。".into());
+            let message = "下载失败，请检查网络和账户后重试。".to_string();
+            task.error = Some(message.clone());
             publish(app, state, &task)?;
             let _ = error;
-            return Err(task.error.unwrap());
+            return Err(message);
         }
         ControlledDownload::Finished(Ok(())) => {}
     }

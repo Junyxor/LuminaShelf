@@ -863,7 +863,7 @@ export default function App() {
 
           <article className="setting-card glass">
             <span className="eyebrow">CORE</span><h3>关于 LuminaShelf</h3>
-            <div className="readout"><span>版本</span><strong>v{status?.version ?? "0.5.0"}</strong></div>
+            <div className="readout"><span>版本</span><strong>v{status?.version ?? "…"}</strong></div>
             <div className="readout"><span>架构</span><strong>Tauri 2 + React + Rust</strong></div>
             <div className="readout"><span>Core 状态</span><strong>{status?.rustCore ? "Online" : "Connecting"}</strong></div>
           </article>
@@ -904,7 +904,7 @@ export default function App() {
             </div>
             <div><span className="eyebrow">LUMINASHELF / {active.eyebrow}</span><h1>{active.label}</h1></div>
           </div>
-          {page === "settings" || page === "account" ? <button className="ghost-button header-back" onClick={() => setPage("home")}>← 返回总览</button> : <div className="version-chip">v{status?.version ?? "0.5.0"}</div>}
+          {page === "settings" || page === "account" ? <button className="ghost-button header-back" onClick={() => setPage("home")}>← 返回总览</button> : <div className="version-chip">v{status?.version ?? "…"}</div>}
         </header>
 
         {error ? <section className="notice error" role="alert"><span>Core bridge</span><strong>{error}</strong><button onClick={() => setError(null)}>×</button></section> : null}
