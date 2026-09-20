@@ -62,8 +62,12 @@ npm run android:apk:windows
 R8 release APK 由 `npm run android:release:windows` 生成，并自动使用本机
 `.signing/` 中持久保存的稳定发布密钥签名为
 `artifacts/android/LuminaShelf_1.0.0_arm64-release.apk`；密钥目录被 Git 忽略，
-不会进入仓库。可用 `npm run test:android:release` 对已安装的 release APK 做
-原生 SAF/阅读/分享/重启 smoke 验收。最终 tag 已创建且指向当前提交后，
+不会进入仓库。**首次正式发布前必须运行 `npm run android:signing:recovery`**：
+它会验证发布证书、把恢复密码复制到剪贴板，并为当前 keystore 写入本地恢复确认。
+请把 `.signing/luminashelf-release.p12` 与该密码分别保存到可信密码管理器/离线备份；
+仅备份 `password.dpapi` 没用，因为 DPAPI 绑定当前 Windows 用户。没有匹配当前 keystore
+的恢复确认时，正式发布脚本会拒绝上传。可用 `npm run test:android:release` 对已安装的
+release APK 做原生 SAF/阅读/分享/重启 smoke 验收。最终 tag 已创建且指向当前提交后，
 `npm run android:release:publish` 会再次核对包名、versionName/versionCode、
 签名、16 KiB 对齐与 SHA-256，再把 release APK 和校验文件上传到同一个 GitHub Release。
 Android CI 只生成 debug/test APK 和 arm64/x86_64 模拟器验收证据，不能把该 CI APK

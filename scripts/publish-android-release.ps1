@@ -8,6 +8,23 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 if (-not $env:ANDROID_HOME) { throw "Set ANDROID_HOME before publishing." }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw "GitHub CLI (gh) is required." }
 
+$keyDirectory = Join-Path (Get-Location) ".signing"
+$keystore = Join-Path $keyDirectory "luminashelf-release.p12"
+$recoveryMarker = Join-Path $keyDirectory "recovery-confirmed"
+if (-not (Test-Path -LiteralPath $keystore)) { throw "The stable Android release keystore is missing." }
+if (-not (Test-Path -LiteralPath $recoveryMarker)) {
+    throw "Signing-key recovery has not been confirmed. Run npm run android:signing:recovery and back up the keystore plus password before publishing."
+}
+$markerValues = @{}
+Get-Content -LiteralPath $recoveryMarker | ForEach-Object {
+    $parts = $_ -split "=", 2
+    if ($parts.Length -eq 2) { $markerValues[$parts[0]] = $parts[1] }
+}
+$currentKeystoreHash = (Get-FileHash -LiteralPath $keystore -Algorithm SHA256).Hash
+if ($markerValues["keystoreSha256"] -ne $currentKeystoreHash) {
+    throw "The release keystore changed after recovery confirmation. Re-run npm run android:signing:recovery and back up the current key before publishing."
+}
+
 $config = Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json
 $version = [string]$config.version
 $expectedTag = "v$version"

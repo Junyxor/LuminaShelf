@@ -16,7 +16,8 @@
     "android:release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android-windows.ps1 -Release",
     "android:apk": "tauri android build --debug --apk --target aarch64",
     "test:android:release": "node scripts/smoke-release.mjs",
-    "android:release:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-android-release.ps1"
+    "android:release:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-android-release.ps1",
+    "android:signing:recovery": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-signing-recovery.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
