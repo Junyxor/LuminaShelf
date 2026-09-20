@@ -55,7 +55,10 @@ impl SourceCatalog {
             .connect_timeout(Duration::from_secs(4))
             .tcp_nodelay(true)
             .pool_idle_timeout(Duration::from_secs(45))
-            .user_agent(format!("LuminaShelf/{} source-discovery", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!(
+                "LuminaShelf/{} source-discovery",
+                env!("CARGO_PKG_VERSION")
+            ))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
             .build()?;
         Ok(Self {
