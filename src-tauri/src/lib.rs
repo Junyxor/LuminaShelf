@@ -100,7 +100,7 @@ impl AppState {
             .pool_max_idle_per_host(4)
             .tcp_nodelay(true)
             .redirect(Policy::limited(4))
-            .user_agent("LuminaShelf/0.5 zlibrary-health")
+            .user_agent(format!("LuminaShelf/{} zlibrary-health", env!("CARGO_PKG_VERSION")))
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())))
             .build()
             .map_err(|error| error.to_string())?;
