@@ -42,32 +42,19 @@ const errors = [];
 class KnownWebView2CdpRegression extends Error {
   constructor(version) { super(`WebView2 ${version} CDP regression`); this.version = version; }
 }
-function webView2Version() {
-  const product = "{F3017226-FE2A-4295-8EAC-A1F3BBE9E131}";
-  for (const key of [
-    `HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\${product}`,
-    `HKLM\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\${product}`,
-    `HKCU\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\${product}`,
-  ]) {
-    try {
-      const value = execFileSync("reg", ["query", key, "/v", "pv"], { encoding: "utf8", windowsHide: true });
-      const match = value.match(/\bpv\s+REG_SZ\s+([0-9.]+)/i);
-      if (match) return match[1];
-    } catch { /* try the next EdgeUpdate hive */ }
-  }
-  return null;
-}
-function webView2DescendantAlive(rootPid) {
+function webView2DescendantVersion(rootPid) {
   try {
     const script = [
       `$all = Get-CimInstance Win32_Process`,
       `$ids = @(${rootPid})`,
-      `$found = $false`,
-      `1..5 | ForEach-Object { $next = @($all | Where-Object { $ids -contains $_.ParentProcessId }); if ($next | Where-Object { $_.Name -eq 'msedgewebview2.exe' }) { $found = $true }; $ids = @($next.ProcessId) }`,
-      `if ($found) { 'true' } else { 'false' }`,
+      `$version = $null`,
+      `1..5 | ForEach-Object { if ($version) { return }; $next = @($all | Where-Object { $ids -contains $_.ParentProcessId }); $web = $next | Where-Object { $_.Name -eq 'msedgewebview2.exe' -and $_.ExecutablePath } | Select-Object -First 1; if ($web) { $version = (Get-Item -LiteralPath $web.ExecutablePath).VersionInfo.ProductVersion }; $ids = @($next.ProcessId) }`,
+      `if ($version) { $version } else { exit 1 }`,
     ].join("; ");
-    return execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 10000 }).trim() === "true";
-  } catch { return false; }
+    return execFileSync("powershell", ["-NoProfile", "-Command", script], {
+      encoding: "utf8", windowsHide: true, timeout: 10000,
+    }).trim();
+  } catch { return null; }
 }
 async function launch() {
   const probe = net.createServer();
@@ -85,10 +72,10 @@ async function launch() {
   try {
     await expect.poll(async () => { try { return (await fetch(endpoint + "/json/version")).ok; } catch { return false; } }, { timeout: 30000 }).toBe(true);
   } catch (error) {
-    const version = webView2Version();
+    const version = await expect.poll(() => webView2DescendantVersion(child.pid), { timeout: 15000 }).toBeTruthy()
+      .then(() => webView2DescendantVersion(child.pid));
     const knownRegression = Boolean(process.env.CI) && /^153\./.test(version || "");
     if (!knownRegression || child.exitCode !== null) throw error;
-    await expect.poll(() => child.exitCode === null && webView2DescendantAlive(child.pid), { timeout: 15000 }).toBe(true);
     throw new KnownWebView2CdpRegression(version);
   }
   browser = await chromium.connectOverCDP(endpoint);
