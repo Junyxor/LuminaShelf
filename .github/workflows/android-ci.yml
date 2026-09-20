@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/usable-release"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
       tag:
-        description: Prerelease tag
+        description: Debug-test prerelease tag (do not use the final v1.0.0 tag)
         required: false
-        default: v1.0.0
+        default: v1.0.0-rc.1
 
 permissions:
   contents: write
@@ -145,8 +145,12 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
+          if [ "$RELEASE_TAG" = "v1.0.0" ]; then
+            echo "::error::The Android CI artifact is a debug/test APK. Build the stable-key signed R8 APK locally before publishing v1.0.0."
+            exit 1
+          fi
           gh release create "$RELEASE_TAG" LuminaShelf-arm64-v8a-debug.apk \
             --target "$GITHUB_SHA" \
             --title "LuminaShelf ${RELEASE_TAG}" \
-            --notes "Early Android arm64 test build. This prerelease is intended for installation and real-device testing." \
+            --notes "CI debug/test APK for Android validation. This is not the stable-key signed 1.0 release artifact and must not be published as v1.0.0." \
             --prerelease
