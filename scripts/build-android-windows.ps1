@@ -8,6 +8,12 @@ if (-not $env:ANDROID_HOME -or -not $env:NDK_HOME -or -not $env:JAVA_HOME) {
     throw "Set ANDROID_HOME, NDK_HOME and JAVA_HOME before building."
 }
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+if (-not (Test-Path -LiteralPath "src-tauri/gen/android")) {
+    cargo fetch --locked --target aarch64-linux-android
+    if ($LASTEXITCODE -ne 0) { throw "Cargo dependency fetch failed" }
+    npm run tauri -- android init --ci
+    if ($LASTEXITCODE -ne 0) { throw "Android project initialization failed" }
+}
 $env:TAURI_ANDROID_PROJECT_PATH = (Resolve-Path "src-tauri/gen/android").Path
 $env:TAURI_ANDROID_PACKAGE_UNESCAPED = "app.luminashelf.client"
 $toolchain = Join-Path $env:NDK_HOME "toolchains/llvm/prebuilt/windows-x86_64/bin"
@@ -47,4 +53,18 @@ foreach ($target in $Targets) {
         & .\gradlew.bat ":app:assemble$taskArch$profileTask" "-x" ":app:rustBuild$taskArch$profileTask" "-PabiList=$abi" "-ParchList=$arch" "-PtargetList=$target" "--console=plain"
         if ($LASTEXITCODE -ne 0) { throw "Gradle APK build failed for $target" }
     } finally { Pop-Location }
+}
+
+if ($Release -and ($Targets -contains "aarch64")) {
+    $releaseDirectory = "src-tauri/gen/android/app/build/outputs/apk/arm64/release"
+    $releaseApk = Get-ChildItem -LiteralPath $releaseDirectory -Filter "*.apk" -File |
+        Where-Object { $_.Name -notmatch "androidTest" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if (-not $releaseApk) { throw "arm64 release APK was not produced" }
+    $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+    $signedOutput = "artifacts/android/LuminaShelf_$($version)_arm64-release.apk"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-android.ps1 -Apk $releaseApk.FullName -Output $signedOutput
+    if ($LASTEXITCODE -ne 0) { throw "Stable release signing failed" }
+    Write-Host "Signed Android release: $signedOutput"
 }
