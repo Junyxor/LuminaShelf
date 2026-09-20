@@ -1,6 +1,7 @@
 // Native accessibility smoke for the actual non-debuggable, R8-minified APK.
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createFixtures } from "./smoke-fixtures.mjs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 const sdk = process.env.ANDROID_HOME || path.resolve(".android-sdk");
@@ -8,6 +9,8 @@ const serial = process.env.ANDROID_SERIAL || "emulator-5556";
 const adbPath = path.join(sdk, "platform-tools", process.platform === "win32" ? "adb.exe" : "adb");
 const output = path.resolve("artifacts/android/release-smoke");
 await mkdir(output, { recursive: true });
+const fixtures = path.join(output, "fixtures");
+await createFixtures(fixtures);
 function adb(...args) { return execFileSync(adbPath, ["-s", serial, ...args], { windowsHide: true, encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 }).trim(); }
 function layout() { adb("shell", "uiautomator", "dump", "/sdcard/lumina-release.xml"); return adb("shell", "cat", "/sdcard/lumina-release.xml"); }
 async function find(match) {
@@ -29,6 +32,8 @@ async function shot(name) {
 const checks = [];
 try {
   adb("shell", "input", "keyevent", "82");
+  adb("shell", "mkdir", "-p", "/sdcard/Download");
+  adb("push", path.join(fixtures, "Lumina TXT.txt"), "/sdcard/Download/Lumina TXT.txt");
   adb("shell", "am", "force-stop", "app.luminashelf.client");
   adb("shell", "am", "start", "-n", "app.luminashelf.client/.MainActivity");
   await find(/text="书库"/);
