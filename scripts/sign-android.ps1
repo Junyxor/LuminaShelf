@@ -33,13 +33,24 @@ try {
     if (-not $Output) { $Output = "artifacts/android/LuminaShelf_$($version)_arm64.apk" }
     $toolsDir = Get-ChildItem (Join-Path $env:ANDROID_HOME "build-tools") -Directory | Sort-Object Name -Descending | Select-Object -First 1
     New-Item -ItemType Directory -Path (Split-Path $Output -Parent) -Force | Out-Null
-    & (Join-Path $toolsDir.FullName "apksigner.bat") sign --ks $keystore --ks-key-alias luminashelf --ks-pass env:LUMINASHELF_SIGNING_PASSWORD --out $Output $Apk
-    if ($LASTEXITCODE -ne 0) { throw "APK signing failed" }
+    $alignedInput = Join-Path $env:TEMP ("luminashelf-aligned-" + [Guid]::NewGuid().ToString("N") + ".apk")
+    try {
+        # zipalign must run before apksigner. -P 16 also verifies/aligns uncompressed
+        # native libraries for modern Android 16 KiB page-size requirements.
+        & (Join-Path $toolsDir.FullName "zipalign.exe") -f -P 16 4 $Apk $alignedInput
+        if ($LASTEXITCODE -ne 0) { throw "APK zipalign failed before signing" }
+        & (Join-Path $toolsDir.FullName "apksigner.bat") sign --ks $keystore --ks-key-alias luminashelf --ks-pass env:LUMINASHELF_SIGNING_PASSWORD --out $Output $alignedInput
+        if ($LASTEXITCODE -ne 0) { throw "APK signing failed" }
+    } finally {
+        Remove-Item -LiteralPath $alignedInput -Force -ErrorAction SilentlyContinue
+    }
     & (Join-Path $toolsDir.FullName "apksigner.bat") verify --verbose --print-certs $Output
     if ($LASTEXITCODE -ne 0) { throw "APK signature verification failed" }
     & (Join-Path $toolsDir.FullName "zipalign.exe") -c -P 16 4 $Output
     if ($LASTEXITCODE -ne 0) { throw "APK alignment verification failed" }
-    Get-FileHash -LiteralPath $Output -Algorithm SHA256 | Select-Object Path,Hash
+    $hash = Get-FileHash -LiteralPath $Output -Algorithm SHA256
+    $hash | Select-Object Path,Hash
+    $hash.Hash | Set-Content -LiteralPath ($Output + ".sha256") -Encoding ascii
 } finally {
     Remove-Item Env:LUMINASHELF_SIGNING_PASSWORD -ErrorAction SilentlyContinue
     [Array]::Clear($secretBytes,0,$secretBytes.Length)
