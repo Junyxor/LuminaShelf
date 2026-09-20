@@ -16,6 +16,10 @@ on:
         required: false
         default: v1.0.0-rc.1
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
