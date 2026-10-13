@@ -18,6 +18,7 @@ The main desktop workflow is now connected end to end:
 - in-chapter text search and adjacent chapter prefetch
 - built-in PDF reader with Rust IPC range loading and lazy-loaded PDF.js runtime
 - Android arm64 debug APK CI artifact
+- signed Android release APK build with persistent local release keys
 - Windows NSIS installer packaging workflow
 
 ## Architecture
@@ -50,7 +51,7 @@ Rust command bridge
 Requires a current Rust stable toolchain and Node.js 24+.
 
 ```bash
-npm install
+npm ci
 npm run build
 cargo test -p lumina-core
 cargo clippy -p lumina-core --all-targets -- -D warnings
@@ -74,6 +75,19 @@ npm run tauri -- build --bundles nsis
 The `Desktop Package` GitHub Actions workflow can also be started manually. Pushing a `v*` tag builds the Windows installer and publishes it to the matching GitHub Release.
 
 Android CI currently produces an arm64 debug APK artifact for real-device testing and can optionally publish a prerelease from `workflow_dispatch`.
+
+For a signed Android release, install JDK 17, Android SDK Platform 36, Build Tools 36.0.0,
+NDK 27.2.12479018 and the Rust Android targets, then run:
+
+```bash
+npm run android:release
+```
+
+The default release includes arm64-v8a, armeabi-v7a and x86_64. The signed APK,
+SHA-256 checksum and public certificate are written to `artifacts/android/`.
+The first run generates a release keystore and credentials in `.signing/`; subsequent
+builds reuse that identity. Both directories are ignored by Git. See
+[Android release instructions](ANDROID_RELEASE.md) for environment setup and key backups.
 
 ## Status
 

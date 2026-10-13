@@ -8,3 +8,8 @@ target/
 src-tauri/gen/
 
 *.tsbuildinfo
+.signing/
+artifacts/
+*.keystore
+*.jks
+*.p12

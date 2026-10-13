@@ -63,14 +63,24 @@ pub struct ResolveResult {
 #[derive(Clone)]
 pub struct AppResolver {
     policy: Arc<RwLock<ResolverPolicy>>,
-    selected: Arc<RwLock<Arc<TokioResolver>>>,
-    system: Arc<TokioResolver>,
+    selected: Arc<RwLock<Arc<DnsBackend>>>,
+    system: Arc<DnsBackend>,
+}
+
+enum DnsBackend {
+    Hickory(Box<TokioResolver>),
+    #[cfg(any(target_os = "android", test))]
+    Native,
 }
 
 impl AppResolver {
     pub fn new(policy: ResolverPolicy) -> Result<Self> {
         validate_policy(&policy)?;
-        let system = Arc::new(build_system_resolver()?);
+        Self::from_system(policy, build_system_resolver()?)
+    }
+
+    fn from_system(policy: ResolverPolicy, system: DnsBackend) -> Result<Self> {
+        let system = Arc::new(system);
         let selected = if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
             system.clone()
         } else {
@@ -199,13 +209,23 @@ fn resolver_transport_changed(before: &ResolverPolicy, after: &ResolverPolicy) -
         || before.doh_path != after.doh_path
 }
 
-fn build_system_resolver() -> Result<TokioResolver> {
-    let mut builder = TokioResolver::builder_tokio().context("load system DNS configuration")?;
-    builder.options_mut().server_ordering_strategy = ServerOrderingStrategy::QueryStatistics;
-    builder.build().context("build system DNS resolver")
+#[cfg(target_os = "android")]
+fn build_system_resolver() -> Result<DnsBackend> {
+    // Android can have no active network at startup. OS lookups are lazy and also
+    // follow changes to the active network, VPN and Private DNS configuration.
+    Ok(DnsBackend::Native)
 }
 
-fn build_resolver(policy: &ResolverPolicy) -> Result<TokioResolver> {
+#[cfg(not(target_os = "android"))]
+fn build_system_resolver() -> Result<DnsBackend> {
+    let mut builder = TokioResolver::builder_tokio().context("load system DNS configuration")?;
+    builder.options_mut().server_ordering_strategy = ServerOrderingStrategy::QueryStatistics;
+    Ok(DnsBackend::Hickory(Box::new(
+        builder.build().context("build system DNS resolver")?,
+    )))
+}
+
+fn build_resolver(policy: &ResolverPolicy) -> Result<DnsBackend> {
     if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
         return build_system_resolver();
     }
@@ -239,7 +259,9 @@ fn build_resolver(policy: &ResolverPolicy) -> Result<TokioResolver> {
     let mut builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
     let opts: &mut ResolverOpts = builder.options_mut();
     opts.server_ordering_strategy = ServerOrderingStrategy::UserProvidedOrder;
-    builder.build().context("build configured DNS resolver")
+    Ok(DnsBackend::Hickory(Box::new(
+        builder.build().context("build configured DNS resolver")?,
+    )))
 }
 
 fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
@@ -277,15 +299,27 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
 }
 
 async fn lookup_with_timeout(
-    resolver: &TokioResolver,
+    resolver: &DnsBackend,
     host: &str,
     timeout_ms: u64,
 ) -> Result<Vec<IpAddr>> {
-    let fqdn = format!("{}.", host.trim_end_matches('.'));
-    let response = timeout(Duration::from_millis(timeout_ms), resolver.lookup_ip(fqdn))
-        .await
-        .context("DNS lookup timed out")??;
-    let mut addresses: Vec<IpAddr> = response.iter().collect();
+    let deadline = Duration::from_millis(timeout_ms);
+    let mut addresses: Vec<IpAddr> = match resolver {
+        DnsBackend::Hickory(resolver) => {
+            let fqdn = format!("{}.", host.trim_end_matches('.'));
+            timeout(deadline, resolver.lookup_ip(fqdn))
+                .await
+                .context("DNS lookup timed out")??
+                .iter()
+                .collect()
+        }
+        #[cfg(any(target_os = "android", test))]
+        DnsBackend::Native => timeout(deadline, tokio::net::lookup_host((host, 0)))
+            .await
+            .context("DNS lookup timed out")??
+            .map(|address| address.ip())
+            .collect(),
+    };
     addresses.sort_unstable();
     addresses.dedup();
     Ok(addresses)
@@ -322,6 +356,33 @@ fn normalize_host(host: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_system_backend_initializes_and_resolves_localhost() {
+        let resolver = AppResolver::from_system(ResolverPolicy::default(), DnsBackend::Native)
+            .expect("native system DNS initialization must not require an active network");
+        let result = resolver.resolve("localhost").await.unwrap();
+        assert!(!result.addresses.is_empty());
+        assert!(result.addresses.iter().all(IpAddr::is_loopback));
+        assert!(!result.used_fallback);
+        assert_eq!(result.mode, ResolverMode::System);
+    }
+
+    #[tokio::test]
+    async fn native_system_backend_preserves_offline_app_hosts() {
+        let resolver =
+            AppResolver::from_system(ResolverPolicy::default(), DnsBackend::Native).unwrap();
+        resolver
+            .set_host_override("offline.invalid", vec!["192.0.2.1".parse().unwrap()])
+            .await
+            .unwrap();
+        let result = resolver.resolve("offline.invalid").await.unwrap();
+        assert_eq!(
+            result.addresses,
+            vec!["192.0.2.1".parse::<IpAddr>().unwrap()]
+        );
+        assert!(result.via_app_hosts);
+    }
 
     #[test]
     fn wildcard_host_prefers_longest_suffix() {

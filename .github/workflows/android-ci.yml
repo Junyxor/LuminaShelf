@@ -36,7 +36,7 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools
+          packages: platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -45,10 +45,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Initialize Android project
-        run: npm run tauri -- android init --ci
+        run: npm run android:prepare
 
       - name: Resolve Android NDK
         shell: bash
@@ -61,7 +61,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
 
       - name: Build arm64 debug APK
-        run: npm run tauri -- android build --debug --apk --target aarch64
+        run: npm run android:apk
 
       - name: Stage APK
         shell: bash
