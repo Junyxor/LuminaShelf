@@ -1,0 +1,40 @@
+.network-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.network-heading h2 { margin-bottom: 7px; }
+.network-heading p, .network-test > p { margin-bottom: 18px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+.network-heading > svg { color: #85947c; margin-top: 4px; }
+.network-auto { width: 100%; justify-content: center; margin: 0 0 20px; background: #f0f4ed; color: var(--accent); }
+.network-field { display: flex; flex-direction: column; gap: 9px; margin: 19px 0; font-size: 15px; }
+.network-field > span { font-weight: 550; }
+.network-field small { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.network-field textarea { resize: vertical; width: 100%; font-family: ui-monospace, "Microsoft YaHei", monospace; font-size: 14px; line-height: 1.7; }
+.dns-presets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: -4px; }
+.dns-presets button { border: 1px solid var(--line); border-radius: 7px; padding: 10px 16px; background: var(--surface); font-size: 14px; }
+.dns-presets button.selected { background: var(--accent-soft); border-color: #c8d6c0; color: var(--accent); }
+.check-field { min-height: 60px; display: flex; gap: 12px; align-items: center; cursor: pointer; margin: 12px 0; }
+.check-field input { width: 20px; min-height: 20px; height: 20px; accent-color: var(--accent); margin: 0; flex-shrink: 0; }
+.check-field > span { font-size: 14px; line-height: 1.55; }
+.check-field small { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.network-advanced { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 20px 0; }
+.network-advanced summary { min-height: 56px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-size: 15px; list-style: none; }
+.network-advanced summary::-webkit-details-marker { display: none; }
+.network-advanced[open] summary svg { transform: rotate(180deg); }
+.network-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.network-actions > span { font-size: 12px; color: #8a7453; }
+.network-feedback { display: flex; align-items: flex-start; gap: 9px; font-size: 14px; line-height: 1.7; margin: 16px 0 0; padding: 12px; border-radius: 8px; overflow-wrap: anywhere; }
+.network-feedback > svg { margin-top: 3px; flex-shrink: 0; }
+.network-feedback.success { color: var(--accent); background: var(--accent-soft); }
+.network-feedback.error { color: var(--error); background: #fff0ea; }
+.network-test { margin-top: 30px; padding-top: 24px; border-top: 1px solid var(--line); }
+.network-test h3 { margin-bottom: 7px; }
+.network-test-controls { display: flex; gap: 10px; }
+.network-test-controls > input { flex: 1; min-width: 0; }
+.network-test-controls > button { flex-shrink: 0; }
+.network-report { margin-top: 20px; padding: 16px; background: #f2f5ef; border-radius: 8px; }
+.network-report > p:first-child { display: flex; gap: 9px; align-items: center; margin-bottom: 12px; font-size: 15px; }
+.report-good { color: var(--accent); }
+.network-report > div { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; padding: 9px 0; font-size: 13px; }
+.network-report > div > span { color: var(--muted); flex-shrink: 0; }
+.network-report > div > strong { font-weight: 500; text-align: right; }
+.report-addresses, .network-report .error-text { font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; margin: 8px 0; }
+.fallback-note { color: #8a7453; font-size: 13px; line-height: 1.6; margin-top: 14px; margin-bottom: 0; }
+@media (max-width: 359px) { .network-test-controls { flex-direction: column; } }

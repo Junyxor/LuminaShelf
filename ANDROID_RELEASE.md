@@ -37,12 +37,15 @@ running Gradle, so Windows Developer Mode and symbolic link privileges are optio
 It also disables Kotlin incremental compilation on Windows because the Cargo
 registry and project can reside on different drives. Android project preparation
 adds network state access, the project icons and the compatible Kotlin compiler.
+Preparation also copies tracked light-theme and Activity templates from
+`src-tauri/android/`, including system-bar/cutout/keyboard insets and hardware back
+navigation. Cargo and Gradle default to two workers.
 Android System DNS uses lazy operating-system lookups, so launching the reader
 does not require an active network and DNS follows VPN/Private DNS/network changes.
 
 ## Output and signing identity
 
-`artifacts/android/LuminaShelf-0.5.0-universal-release.apk` is the installable release.
+`artifacts/android/LuminaShelf-0.6.0-universal-release.apk` is the installable release.
 The same folder contains its `.sha256` checksum, `release-certificate.pem` and
 `universal-build-info.json`. Release builds use R8 and optimized, stripped Rust
 libraries; native ELF segments and APK native library entries are aligned for
@@ -76,11 +79,12 @@ node scripts/android-build.mjs --debug x86_64
 Install an APK with Android Platform Tools:
 
 ```bash
-adb install -r artifacts/android/LuminaShelf-0.5.0-universal-release.apk
+adb install -r artifacts/android/LuminaShelf-0.6.0-universal-release.apk
 ```
 
 The app-local default download folder on Android is under
 `Android/data/app.luminashelf.client/files/Download/LuminaShelf`. The library page
-can scan accessible app-local folders. Android's Storage Access Framework picker
-and general shared-storage imports are not implemented by the upstream project.
+supports EPUB/PDF/TXT imports using Android's Storage Access Framework picker.
+Selected content URIs are streamed into private app storage; no broad storage
+permission is requested. The picker opens only after an explicit import action.
 Z-Library account tests require a user-owned account and a reachable EAPI origin.

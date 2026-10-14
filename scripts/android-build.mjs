@@ -13,6 +13,7 @@ export const architectures = {
 };
 
 export function buildAndroid(targets, debug = false) {
+  process.env.CARGO_BUILD_JOBS ||= "2";
   if (!targets.length || targets.some((target) => !architectures[target])) throw new Error("Invalid Android targets.");
   const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
   if (!sdk || !process.env.JAVA_HOME) throw new Error("Set ANDROID_HOME and JAVA_HOME before building.");
@@ -70,7 +71,7 @@ export function buildAndroid(targets, debug = false) {
       ...targets.flatMap((target) => {
         const arch = architectures[target].arch;
         return ["-x", `:app:rustBuild${arch[0].toUpperCase()}${arch.slice(1)}${profile}`];
-      }), "--console=plain",
+      }), "--console=plain", "--max-workers=2",
     ];
     run(join(process.env.JAVA_HOME, "bin/java.exe"), gradleArgs, { cwd: android });
   }

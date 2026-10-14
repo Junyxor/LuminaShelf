@@ -1,6 +1,6 @@
 use crate::{
     library::now_unix_ms,
-    network::{AppResolver, ReqwestResolver},
+    network::{AppResolver, NetworkClient},
 };
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
@@ -152,8 +152,22 @@ struct SegmentManifest {
 
 #[derive(Clone)]
 pub struct SegmentedDownloader {
-    client: Client,
+    client: DownloadClient,
     config: DownloadConfig,
+}
+
+#[derive(Clone)]
+enum DownloadClient {
+    Fixed(Client),
+    Configured(NetworkClient),
+}
+impl DownloadClient {
+    fn client(&self) -> Result<Client> {
+        match self {
+            Self::Fixed(client) => Ok(client.clone()),
+            Self::Configured(client) => client.client(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,19 +178,18 @@ struct RemoteShape {
 
 impl SegmentedDownloader {
     pub fn new(client: Client, config: DownloadConfig) -> Self {
-        Self { client, config }
+        Self {
+            client: DownloadClient::Fixed(client),
+            config,
+        }
     }
 
     pub fn with_resolver(resolver: AppResolver, config: DownloadConfig) -> Result<Self> {
-        let client = Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(8))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(8)
-            .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 downloader")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
-            .build()?;
-        Ok(Self::new(client, config))
+        let client = NetworkClient::new(resolver, "LuminaShelf/0.6 download", None)?;
+        Ok(Self {
+            client: DownloadClient::Configured(client),
+            config,
+        })
     }
 
     pub async fn download(
@@ -274,6 +287,7 @@ impl SegmentedDownloader {
     async fn inspect_remote(&self, url: &Url, headers: &header::HeaderMap) -> Result<RemoteShape> {
         if let Ok(head) = self
             .client
+            .client()?
             .head(url.clone())
             .headers(headers.clone())
             .send()
@@ -293,6 +307,7 @@ impl SegmentedDownloader {
 
         let probe = self
             .client
+            .client()?
             .get(url.clone())
             .headers(headers.clone())
             .header(header::RANGE, "bytes=0-0")
@@ -333,7 +348,7 @@ impl SegmentedDownloader {
             && existing > 0
             && shape.total.is_some_and(|total| existing < total);
 
-        let mut request = self.client.get(url).headers(headers);
+        let mut request = self.client.client()?.get(url).headers(headers);
         if can_resume {
             request = request.header(header::RANGE, format!("bytes={existing}-"));
         }
@@ -450,7 +465,7 @@ impl SegmentedDownloader {
             let start = index * self.config.segment_size;
             let end = (start + self.config.segment_size - 1).min(total - 1);
             let permit = semaphore.clone().acquire_owned().await?;
-            let client = self.client.clone();
+            let client = self.client.client()?;
             let url = url.clone();
             let path = destination.clone();
             let downloaded = downloaded.clone();

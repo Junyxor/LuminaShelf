@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock as SyncRwLock,
+    },
     time::{Duration, Instant},
 };
 use tokio::{sync::RwLock, time::timeout};
@@ -31,6 +34,9 @@ pub struct ResolverPolicy {
     pub upstream_ip: Option<IpAddr>,
     pub server_name: Option<String>,
     pub doh_path: Option<String>,
+    pub doh_url: Option<String>,
+    pub upstream_port: Option<u16>,
+    pub proxy_url: Option<String>,
     pub fallback_to_system: bool,
     pub timeout_ms: u64,
 }
@@ -43,6 +49,9 @@ impl Default for ResolverPolicy {
             upstream_ip: None,
             server_name: None,
             doh_path: Some("/dns-query".to_string()),
+            doh_url: None,
+            upstream_port: None,
+            proxy_url: None,
             fallback_to_system: true,
             timeout_ms: 3_000,
         }
@@ -65,16 +74,20 @@ pub struct AppResolver {
     policy: Arc<RwLock<ResolverPolicy>>,
     selected: Arc<RwLock<Arc<DnsBackend>>>,
     system: Arc<DnsBackend>,
+    revision: Arc<AtomicU64>,
+    proxy: Arc<SyncRwLock<Option<String>>>,
 }
 
 enum DnsBackend {
     Hickory(Box<TokioResolver>),
+    Doh(Box<super::doh::DohResolver>),
     #[cfg(any(target_os = "android", test))]
     Native,
 }
 
 impl AppResolver {
     pub fn new(policy: ResolverPolicy) -> Result<Self> {
+        let policy = normalize_policy(policy)?;
         validate_policy(&policy)?;
         Self::from_system(policy, build_system_resolver()?)
     }
@@ -87,6 +100,8 @@ impl AppResolver {
             Arc::new(build_resolver(&policy)?)
         };
         Ok(Self {
+            revision: Arc::new(AtomicU64::new(0)),
+            proxy: Arc::new(SyncRwLock::new(policy.proxy_url.clone())),
             policy: Arc::new(RwLock::new(policy)),
             selected: Arc::new(RwLock::new(selected)),
             system,
@@ -101,7 +116,15 @@ impl AppResolver {
         self.policy.read().await.clone()
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+    pub fn proxy_url(&self) -> Option<String> {
+        self.proxy.read().ok().and_then(|proxy| proxy.clone())
+    }
+
     pub async fn set_policy(&self, policy: ResolverPolicy) -> Result<()> {
+        let policy = normalize_policy(policy)?;
         validate_policy(&policy)?;
         let current = self.policy().await;
         if resolver_transport_changed(&current, &policy) {
@@ -112,7 +135,9 @@ impl AppResolver {
             };
             *self.selected.write().await = next;
         }
+        *self.proxy.write().map_err(|_| anyhow!("代理配置锁异常"))? = policy.proxy_url.clone();
         *self.policy.write().await = policy;
+        self.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -207,6 +232,10 @@ fn resolver_transport_changed(before: &ResolverPolicy, after: &ResolverPolicy) -
         || before.upstream_ip != after.upstream_ip
         || before.server_name != after.server_name
         || before.doh_path != after.doh_path
+        || before.doh_url != after.doh_url
+        || before.upstream_port != after.upstream_port
+        || before.proxy_url != after.proxy_url
+        || before.timeout_ms != after.timeout_ms
 }
 
 #[cfg(target_os = "android")]
@@ -226,13 +255,18 @@ fn build_system_resolver() -> Result<DnsBackend> {
 }
 
 fn build_resolver(policy: &ResolverPolicy) -> Result<DnsBackend> {
+    if policy.mode == ResolverMode::Doh {
+        return Ok(DnsBackend::Doh(Box::new(super::doh::DohResolver::new(
+            policy,
+        )?)));
+    }
     if matches!(policy.mode, ResolverMode::System | ResolverMode::AppHosts) {
         return build_system_resolver();
     }
     let ip = policy
         .upstream_ip
         .context("custom resolver requires upstreamIp")?;
-    let name_server = match policy.mode {
+    let mut name_server = match policy.mode {
         ResolverMode::CustomDns => NameServerConfig::udp_and_tcp(ip),
         ResolverMode::Dot => {
             let server_name: Arc<str> = Arc::from(
@@ -255,6 +289,11 @@ fn build_resolver(policy: &ResolverPolicy) -> Result<DnsBackend> {
         }
         ResolverMode::System | ResolverMode::AppHosts => unreachable!(),
     };
+    if let Some(port) = policy.upstream_port {
+        for connection in &mut name_server.connections {
+            connection.port = port;
+        }
+    }
     let config = ResolverConfig::from_parts(None, Vec::new(), vec![name_server]);
     let mut builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
     let opts: &mut ResolverOpts = builder.options_mut();
@@ -265,6 +304,19 @@ fn build_resolver(policy: &ResolverPolicy) -> Result<DnsBackend> {
 }
 
 fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
+    if policy.upstream_port == Some(0) {
+        return Err(anyhow!("DNS 端口不能为 0"));
+    }
+    if let Some(proxy) = &policy.proxy_url {
+        let url = url::Url::parse(proxy).context("代理地址格式不正确")?;
+        if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
+            || url.host_str().is_none()
+        {
+            return Err(anyhow!(
+                "代理地址需为 http://、https://、socks5:// 或 socks5h:// 地址"
+            ));
+        }
+    }
     if policy.timeout_ms < 250 || policy.timeout_ms > 30_000 {
         return Err(anyhow!("timeoutMs must be between 250 and 30000"));
     }
@@ -275,7 +327,10 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
                 .upstream_ip
                 .context("custom DNS requires upstreamIp")?;
         }
-        ResolverMode::Dot | ResolverMode::Doh => {
+        ResolverMode::Doh => {
+            super::doh::endpoint(policy)?;
+        }
+        ResolverMode::Dot => {
             policy
                 .upstream_ip
                 .context("encrypted DNS requires upstreamIp")?;
@@ -298,6 +353,30 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
     Ok(())
 }
 
+fn normalize_policy(mut policy: ResolverPolicy) -> Result<ResolverPolicy> {
+    policy.app_hosts = policy
+        .app_hosts
+        .into_iter()
+        .map(|(host, mut addresses)| {
+            addresses.sort_unstable();
+            addresses.dedup();
+            Ok((normalize_host(&host)?, addresses))
+        })
+        .collect::<Result<_>>()?;
+    for field in [
+        &mut policy.doh_url,
+        &mut policy.proxy_url,
+        &mut policy.server_name,
+    ] {
+        *field = field
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    Ok(policy)
+}
+
 async fn lookup_with_timeout(
     resolver: &DnsBackend,
     host: &str,
@@ -305,6 +384,9 @@ async fn lookup_with_timeout(
 ) -> Result<Vec<IpAddr>> {
     let deadline = Duration::from_millis(timeout_ms);
     let mut addresses: Vec<IpAddr> = match resolver {
+        // Each address family has its own full-query deadline. An outer deadline
+        // would discard a valid A response whenever AAAA finishes at the limit.
+        DnsBackend::Doh(resolver) => resolver.lookup(host).await?,
         DnsBackend::Hickory(resolver) => {
             let fqdn = format!("{}.", host.trim_end_matches('.'));
             timeout(deadline, resolver.lookup_ip(fqdn))
@@ -356,6 +438,24 @@ fn normalize_host(host: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pasted_hosts_rules_are_normalized_before_matching() {
+        let resolver =
+            AppResolver::from_system(ResolverPolicy::default(), DnsBackend::Native).unwrap();
+        let mut policy = ResolverPolicy::default();
+        policy.app_hosts.insert(
+            "  BOOKS.INVALID.  ".into(),
+            vec!["192.0.2.8".parse().unwrap()],
+        );
+        resolver.set_policy(policy).await.unwrap();
+        let result = resolver.resolve("books.invalid").await.unwrap();
+        assert!(result.via_app_hosts);
+        assert_eq!(
+            result.addresses,
+            vec!["192.0.2.8".parse::<IpAddr>().unwrap()]
+        );
+    }
 
     #[tokio::test]
     async fn native_system_backend_initializes_and_resolves_localhost() {

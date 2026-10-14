@@ -1,14 +1,16 @@
+mod imports;
+mod network_commands;
 mod pdf;
 mod reader_bridge;
 
+use lumina_core::network::NetworkClient;
 use lumina_core::{
     download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
     library::{now_unix_ms, scan_folder},
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ReadingProgress, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery,
-    SearchResult, StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    ProviderRegistry, ReadingProgress, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
+    StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
-use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -36,9 +38,10 @@ struct AppState {
     resolver_policy_path: PathBuf,
     state_store: StateStore,
     zlibrary: Arc<ZLibraryProvider>,
-    zlibrary_probe: Client,
+    zlibrary_probe: NetworkClient,
     zlibrary_config: RwLock<ZLibraryConfig>,
     zlibrary_config_path: PathBuf,
+    book_dir: PathBuf,
 }
 
 impl AppState {
@@ -79,19 +82,15 @@ impl AppState {
         );
         providers.register_shared(zlibrary.clone());
 
-        let zlibrary_probe = Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(4)
-            .tcp_nodelay(true)
-            .redirect(Policy::limited(4))
-            .user_agent("LuminaShelf/0.5 zlibrary-health")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())))
-            .build()
-            .map_err(|error| error.to_string())?;
+        let zlibrary_probe = NetworkClient::new(
+            resolver.clone(),
+            "LuminaShelf/0.6 connection",
+            Some(Duration::from_secs(12)),
+        )
+        .map_err(|error| error.to_string())?;
 
         Ok(Self {
+            book_dir: config_dir.join("books"),
             resolver,
             providers,
             resolver_policy_path,
@@ -323,7 +322,7 @@ async fn search_books(
             },
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -336,7 +335,7 @@ async fn book_details(
         .providers
         .details(&provider_id, &book_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -533,6 +532,8 @@ async fn probe_zlibrary_origin(state: &AppState, origin: &Url) -> Result<(), Str
         .map_err(|error| format!("build EAPI probe URL: {error}"))?;
     let response = state
         .zlibrary_probe
+        .client()
+        .map_err(|error| format!("{error:#}"))?
         .get(endpoint)
         .header("accept", "application/json")
         .send()
@@ -656,11 +657,17 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_dir = app
                 .path()
                 .app_config_dir()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            #[cfg(debug_assertions)]
+            let config_dir = std::env::var_os("LUMINA_QA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or(config_dir);
             let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
             app.manage(state);
             Ok(())
@@ -670,6 +677,12 @@ pub fn run() {
             provider_descriptors,
             resolver_policy,
             set_resolver_policy,
+            network_commands::test_network,
+            network_commands::optimize_network,
+            network_commands::book_cover_bytes,
+            imports::import_local_books,
+            imports::import_paths,
+            imports::remove_library_item,
             resolve_host,
             zlibrary_status,
             zlibrary_login,

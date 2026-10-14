@@ -32,6 +32,8 @@ type Props = {
   format: string;
   chapterIndex: number;
   progressFraction: number;
+  initialOffset?: number;
+  onProgressChange?: (offset: number) => void;
   onChapterChange: (index: number) => void;
   onClose: () => void;
 };
@@ -66,11 +68,14 @@ export default function ReaderView({
   format,
   chapterIndex,
   progressFraction,
+  initialOffset = 0,
+  onProgressChange,
   onChapterChange,
   onClose,
 }: Props) {
   const [preferences, setPreferences] = useState<ReaderPreferences>(() => loadPreferences());
   const [tocOpen, setTocOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -78,11 +83,24 @@ export default function ReaderView({
   const [chapterLoading, setChapterLoading] = useState(false);
   const [chapterError, setChapterError] = useState<string | null>(null);
   const matchRefs = useRef<Array<HTMLElement | null>>([]);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const restoring = useRef(false);
   const chapter = book.chapters[chapterIndex];
   const chapterCount = book.chapters.length;
   const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
   const chapterText = loadedChapter?.text || "";
   const bookCacheKey = `${book.title}:${book.chapters.length}:${bookPath}`;
+
+  useEffect(() => {
+    if (!chapterText || chapterLoading) return;
+    restoring.current = true;
+    const frame = requestAnimationFrame(() => {
+      const body = bodyRef.current;
+      if (body) body.scrollTop = initialOffset * Math.max(0, body.scrollHeight - body.clientHeight);
+      requestAnimationFrame(() => { restoring.current = false; });
+    });
+    return () => { cancelAnimationFrame(frame); };
+  }, [bookPath, chapter?.id, chapterText, chapterLoading]);
 
   useEffect(() => {
     localStorage.setItem("luminashelf.reader.preferences", JSON.stringify(preferences));
@@ -216,8 +234,8 @@ export default function ReaderView({
   }, [activeMatchIndex, searchIndex.positions.length, searchOpen]);
 
   const chapterLabel = useMemo(
-    () => `${chapter?.title ?? "未命名章节"} · ${chapterIndex + 1}/${chapterCount}`,
-    [chapter?.title, chapterIndex, chapterCount],
+    () => format === "txt" ? "纯文本 · 全文" : `${chapter?.title ?? "未命名章节"} · ${chapterIndex + 1}/${chapterCount}`,
+    [chapter?.title, chapterIndex, chapterCount, format],
   );
 
   if (!chapter) return null;
@@ -283,9 +301,9 @@ export default function ReaderView({
     <div className="reader-backdrop" onClick={onClose}>
       <section className={`reader-shell reader-theme-${preferences.theme}`} onClick={(event) => event.stopPropagation()}>
         <header className="reader-toolbar">
-          <button className="ghost-button" onClick={onClose}>← 返回书库</button>
+          <button className="ghost-button" onClick={onClose}>← 书架</button>
           <div className="reader-title">
-            <strong>{book.title || fallbackTitle}</strong>
+            <strong>{fallbackTitle || book.title}</strong>
             <small>{chapterLabel}</small>
           </div>
           <div className="reader-toolbar-actions">
@@ -298,6 +316,7 @@ export default function ReaderView({
               查找
             </button>
             <button className="ghost-button reader-icon-button" onClick={() => setTocOpen((open) => !open)} aria-label="章节目录">目录</button>
+            <button className="ghost-button reader-icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-label="阅读设置">设置</button>
             <span className="format-badge">{format.toUpperCase()}</span>
           </div>
         </header>
@@ -353,9 +372,14 @@ export default function ReaderView({
             </div>
           ) : null}
 
-          <div className="reader-body">
+          <div className="reader-body" ref={bodyRef} onScroll={() => {
+            const body = bodyRef.current;
+            if (!body || chapterLoading || restoring.current) return;
+            const extent = body.scrollHeight - body.clientHeight;
+            onProgressChange?.(extent > 0 ? Math.min(1, Math.max(0, body.scrollTop / extent)) : 1);
+          }}>
             <article>
-              <h2>{chapter.title}</h2>
+              <h2>{format === "txt" ? fallbackTitle : chapter.title}</h2>
               <div
                 className="reader-text"
                 style={{ fontSize: `${preferences.fontSize}px`, lineHeight: preferences.lineHeight }}
@@ -372,11 +396,11 @@ export default function ReaderView({
 
         <footer className="reader-footer reader-footer-expanded">
           <div className="reader-position">
-            <small>{Math.round(progressFraction * 100)}% · 进度自动保存到本地 SQLite</small>
+            <small>{Math.round(progressFraction * 100)}%</small>
             <div className="reader-progress-track"><i style={{ width: `${progressFraction * 100}%` }} /></div>
           </div>
 
-          <div className="reader-controls" aria-label="阅读设置">
+          {settingsOpen ? <div className="reader-controls" aria-label="阅读设置">
             <div className="reader-control-group">
               <span>字号</span>
               <button onClick={() => changeFontSize(-1)} disabled={preferences.fontSize <= 14}>A−</button>
@@ -396,11 +420,10 @@ export default function ReaderView({
                   className={`${theme} ${preferences.theme === theme ? "active" : ""}`}
                   onClick={() => setPreferences((current) => ({ ...current, theme }))}
                   aria-label={theme === "light" ? "浅色主题" : theme === "sepia" ? "米黄主题" : "深色主题"}
-                  title={theme === "light" ? "浅色" : theme === "sepia" ? "米黄" : "深色"}
-                />
+                >{theme === "light" ? "纸白" : theme === "sepia" ? "米黄" : "夜间"}</button>
               ))}
             </div>
-          </div>
+          </div> : null}
 
           <div className="reader-nav-actions">
             <button className="ghost-button" disabled={chapterLoading || chapterIndex === 0} onClick={() => onChapterChange(chapterIndex - 1)}>上一章</button>

@@ -1,9 +1,8 @@
 use super::{EndpointSource, MirrorRegistry, MirrorSourceKind, RemoteEndpointSource};
-use crate::network::{AppResolver, ReqwestResolver};
+use crate::network::{AppResolver, NetworkClient};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use futures::{stream, StreamExt};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     sync::Arc,
@@ -44,20 +43,17 @@ impl SourceDefinition {
 
 #[derive(Clone)]
 pub struct SourceCatalog {
-    client: Client,
+    client: NetworkClient,
     entries: Arc<DashMap<String, SourceDefinition>>,
 }
 
 impl SourceCatalog {
     pub fn new(resolver: AppResolver) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(8))
-            .connect_timeout(Duration::from_secs(4))
-            .tcp_nodelay(true)
-            .pool_idle_timeout(Duration::from_secs(45))
-            .user_agent("LuminaShelf/0.2 source-discovery")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
-            .build()?;
+        let client = NetworkClient::new(
+            resolver,
+            "LuminaShelf/0.6 discovery",
+            Some(Duration::from_secs(8)),
+        )?;
         Ok(Self {
             client,
             entries: Arc::new(DashMap::new()),
@@ -106,7 +102,7 @@ impl SourceCatalog {
             return Ok(0);
         }
         let remote =
-            RemoteEndpointSource::new(self.client.clone(), source.url.clone(), source.kind)
+            RemoteEndpointSource::new(self.client.client()?, source.url.clone(), source.kind)
                 .allow_insecure_http(source.allow_insecure_http);
         match remote.discover().await {
             Ok(endpoints) => {

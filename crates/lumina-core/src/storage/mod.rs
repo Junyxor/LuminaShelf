@@ -233,6 +233,15 @@ impl StateStore {
         Ok(output)
     }
 
+    pub fn remove_library_item(&self, id: &str) -> Result<()> {
+        let mut connection = self.conn()?;
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM reading_progress WHERE library_id=?1", [id])?;
+        transaction.execute("DELETE FROM library_items WHERE id=?1", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn upsert_library_item(&self, item: &LibraryItem) -> Result<()> {
         let authors = serde_json::to_string(&item.authors)?;
         let size_bytes = i64::try_from(item.size_bytes).context("library item is too large")?;

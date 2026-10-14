@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.lumina_shelf_desktop" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">#FAFBF8</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="colorPrimary">#365F49</item>
+        <item name="colorSecondary">#365F49</item>
+    </style>
+</resources>

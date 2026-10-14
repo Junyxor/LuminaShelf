@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,7 +46,16 @@ export function prepareAndroid() {
 
   const icons = resolve(root, "src-tauri/icons/android");
   if (existsSync(icons)) cpSync(icons, resolve(android, "app/src/main/res"), { recursive: true });
-  console.log("Android project prepared (API 36, app icons, network state permission).");
+  cpSync(resolve(root, "src-tauri/android/MainActivity.kt"), resolve(android, "app/src/main/java/app/luminashelf/client/MainActivity.kt"));
+  for (const resource of ["values", "values-night"]) {
+    const directory = resolve(android, "app/src/main/res", resource);
+    mkdirSync(directory, { recursive: true });
+    cpSync(resolve(root, "src-tauri/android/themes.xml"), resolve(directory, "themes.xml"));
+  }
+  const assets = resolve(android, "app/src/main/assets");
+  mkdirSync(assets, { recursive: true });
+  cpSync(resolve(root, "OPEN_SOURCE_NOTICES.md"), resolve(assets, "open-source-notices.md"));
+  console.log("Android project prepared (API 36, light theme, system insets, back navigation).");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

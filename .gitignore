@@ -13,3 +13,4 @@ artifacts/
 *.keystore
 *.jks
 *.p12
+.references/

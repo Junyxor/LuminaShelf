@@ -2,14 +2,11 @@ use super::{
     BookDetails, BookFormat, BookProvider, BookSummary, ProviderCapabilities, SearchQuery,
     SearchResult,
 };
-use crate::network::{AppResolver, ReqwestResolver};
+use crate::network::{AppResolver, NetworkClient};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, COOKIE},
-    Client,
-};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, COOKIE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -48,7 +45,7 @@ pub struct ZLibraryHistoryPage {
 
 #[derive(Clone)]
 pub struct ZLibraryProvider {
-    client: Client,
+    client: NetworkClient,
     origin: Arc<RwLock<Url>>,
     session: Arc<RwLock<Option<ZLibrarySession>>>,
     cache: Arc<DashMap<String, BookDetails>>,
@@ -60,15 +57,11 @@ impl ZLibraryProvider {
         if origin.scheme() != "https" {
             return Err(anyhow!("Z-Library provider requires HTTPS"));
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(25))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(8)
-            .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 provider-zlibrary-eapi")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
-            .build()?;
+        let client = NetworkClient::new(
+            resolver,
+            "LuminaShelf/0.6 ZLibrary",
+            Some(Duration::from_secs(25)),
+        )?;
         Ok(Self {
             client,
             origin: Arc::new(RwLock::new(origin)),
@@ -83,6 +76,8 @@ impl ZLibraryProvider {
             return Err(anyhow!("Z-Library provider requires HTTPS"));
         }
         *self.origin.write().await = origin;
+        self.cache.clear();
+        self.acquisition_hints.clear();
         Ok(())
     }
 
@@ -100,6 +95,8 @@ impl ZLibraryProvider {
 
     pub async fn clear_session(&self) {
         *self.session.write().await = None;
+        self.cache.clear();
+        self.acquisition_hints.clear();
     }
 
     pub async fn has_session(&self) -> bool {
@@ -204,13 +201,14 @@ impl ZLibraryProvider {
     ) -> Result<T> {
         let origin = self.origin().await;
         let endpoint = origin.join(path).context("build EAPI URL")?;
+        let client = self.client.client()?;
         let mut request = if let Some(body) = body {
-            self.client
+            client
                 .post(endpoint)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(body)
         } else {
-            self.client.get(endpoint)
+            client.get(endpoint)
         };
         request = request.header("accept", "application/json");
         if auth {

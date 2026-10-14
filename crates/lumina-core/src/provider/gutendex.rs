@@ -2,39 +2,38 @@ use super::{
     BookDetails, BookFormat, BookProvider, BookSummary, ProviderCapabilities, SearchQuery,
     SearchResult,
 };
-use crate::network::{AppResolver, ReqwestResolver};
+use crate::network::{AppResolver, NetworkClient};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use reqwest::Client;
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use url::Url;
 
 #[derive(Clone)]
 pub struct GutendexProvider {
-    client: Client,
+    client: NetworkClient,
 }
 
 impl GutendexProvider {
     pub fn new(resolver: AppResolver) -> Result<Self> {
-        let client = Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(8))
-            .timeout(std::time::Duration::from_secs(20))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(6)
-            .tcp_nodelay(true)
-            .user_agent("LuminaShelf/0.5 provider-gutendex")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver)))
-            .build()?;
+        let client = NetworkClient::new(
+            resolver,
+            "LuminaShelf/0.6 Gutenberg",
+            Some(std::time::Duration::from_secs(25)),
+        )?;
         Ok(Self { client })
     }
 
     async fn fetch(&self, url: Url) -> Result<GutendexResponse> {
         self.client
+            .client()?
             .get(url)
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(reqwest::Error::without_url)
+            .context("书源 HTTPS 连接失败")?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)?
             .json()
             .await
             .context("decode Gutendex response")
