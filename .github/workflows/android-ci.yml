@@ -92,7 +92,17 @@ jobs:
           cache-targets: true
           shared-key: android-release
           workspaces: . -> target
+          cache-on-failure: true
       - run: npm ci
+      - name: Initialize Android project without changing reviewed source
+        shell: pwsh
+        run: |
+          $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
+          npm run android:prepare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $changes = git status --porcelain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($changes) { $changes; git diff --stat; throw 'Android initialization changed source files.' }
       - name: Restore existing signing identity
         env:
           LUMINASHELF_ANDROID_KEYSTORE: ${{ secrets.LUMINASHELF_ANDROID_KEYSTORE }}
@@ -139,6 +149,13 @@ jobs:
           $expectedPath = [IO.Path]::GetFullPath($signingPath)
           if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE) -or -not $expectedPath.StartsWith([IO.Path]::GetFullPath($env:GITHUB_WORKSPACE) + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected signing cleanup path' }
           if (Test-Path -LiteralPath $expectedPath) { Remove-Item -LiteralPath $expectedPath -Recurse -Force }
+      - name: Diagnose source metadata after a failed build
+        if: failure()
+        shell: pwsh
+        run: |
+          git status --porcelain
+          git diff --stat
+          if (Test-Path -LiteralPath artifacts/android/universal-build-info.json) { Get-Content -LiteralPath artifacts/android/universal-build-info.json }
 
   android-smoke:
     if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)

@@ -40,6 +40,9 @@ adds network state access, the project icons and the compatible Kotlin compiler.
 Preparation also copies tracked light-theme and Activity templates from
 `src-tauri/android/`, including system-bar/cutout/keyboard insets and hardware back
 navigation. Cargo and Gradle default to two workers.
+Repository text files use LF line endings so Tauri's first Android initialization
+does not appear to modify `Cargo.toml` on a Windows checkout. CI runs that
+initialization and checks for a clean source tree before compiling the ABIs.
 Android System DNS uses lazy operating-system lookups, so launching the reader
 does not require an active network and DNS follows VPN/Private DNS/network changes.
 
