@@ -42,6 +42,14 @@ def wait_node(predicate, seconds=75, scroll=False):
                 box = bounds(node)
                 if predicate(node) and box[2] > box[0] and box[3] > box[1] and (box[1] + box[3]) // 2 < DISPLAY[1]:
                     return node, root
+            if any(n.get("text") == "下载中断" for n in root.iter("node")):
+                details = next((n for n in root.iter("node") if n.get("text") == "错误详情"), None)
+                if details is not None:
+                    click_node(details)
+                    root = evidence("download-error")
+                message = " | ".join(label(n).strip() for n in root.iter("node") if label(n).strip())[-8000:]
+                (OUT / "download-error.txt").write_text(message, encoding="utf-8")
+                raise AssertionError("Native download failed: " + message)
             error = " | ".join(label(n).strip() for n in root.iter("node") if label(n).strip())[-4000:]
             if scroll:
                 adb("shell", "input", "swipe", str(DISPLAY[0] // 2), str(int(DISPLAY[1] * 0.72)), str(DISPLAY[0] // 2), str(int(DISPLAY[1] * 0.35)), "300")
@@ -94,7 +102,7 @@ try:
     title = label(cover).strip().removeprefix("查看 ")
     click_node(cover)
     download, _ = wait_node(lambda n: "下载 EPUB" in label(n) and n.get("enabled") == "true", 75, scroll=True)
-    adb("emu", "network", "speed", "64")
+    adb("emu", "network", "speed", "256")
     (OUT / "network-shaping.txt").write_text(adb("emu", "network", "status") + adb("shell", "dumpsys", "connectivity"), encoding="utf-8")
     started = time.monotonic()
     click_node(download)
