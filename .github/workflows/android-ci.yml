@@ -21,12 +21,18 @@ on:
         required: false
         type: boolean
         default: true
+      verify_build_run:
+        description: Verify an existing signed universal artifact without rebuilding (Actions run ID)
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: android-${{ github.head_ref || github.ref }}
+  group: android-${{ github.head_ref || github.ref }}-${{ inputs.verify_build_run && 'verify' || 'build' }}
   cancel-in-progress: true
 
 env:
@@ -35,6 +41,7 @@ env:
 
 jobs:
   checks:
+    if: ${{ !inputs.verify_build_run }}
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -63,7 +70,7 @@ jobs:
           if-no-files-found: ignore
 
   package:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !inputs.verify_build_run
     needs: checks
     runs-on: windows-latest
     timeout-minutes: 100
@@ -188,7 +195,7 @@ jobs:
           if (Test-Path -LiteralPath artifacts/android/universal-build-info.json) { Get-Content -LiteralPath artifacts/android/universal-build-info.json }
 
   android-smoke:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
+    if: always() && github.event_name != 'pull_request' && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -198,7 +205,10 @@ jobs:
         with:
           name: LuminaShelf-signed-universal
           path: package
+          run-id: ${{ inputs.verify_build_run || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
+        if: ${{ !inputs.verify_build_run }}
         with:
           name: LuminaShelf-signed-x86_64
           path: package/x86_64
@@ -208,6 +218,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ inputs.verify_build_run && '1' || '0' }}
         with:
           api-level: 35
           arch: x86_64
