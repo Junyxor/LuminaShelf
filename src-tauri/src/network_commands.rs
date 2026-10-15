@@ -1,6 +1,97 @@
 use super::*;
+use lumina_core::network::DnsProfile;
 use lumina_core::network::NetworkClient;
 use std::time::Instant;
+
+#[tauri::command]
+pub async fn dns_profiles(state: State<'_, AppState>) -> Result<Vec<DnsProfile>, String> {
+    if state
+        .state_store
+        .setting("dns-profiles-migrated")
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        let policy = state.resolver.policy().await;
+        if !matches!(
+            policy.mode,
+            lumina_core::ResolverMode::System | lumina_core::ResolverMode::AppHosts
+        ) {
+            state
+                .state_store
+                .save_dns_profile(DnsProfile {
+                    id: "legacy-dns-v06".into(),
+                    name: "原有 DNS 配置".into(),
+                    policy,
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        state
+            .state_store
+            .set_setting("dns-profiles-migrated", "1")
+            .map_err(|e| e.to_string())?;
+    }
+    state
+        .state_store
+        .dns_profiles()
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub fn save_dns_profile(
+    state: State<'_, AppState>,
+    profile: DnsProfile,
+) -> Result<DnsProfile, String> {
+    state
+        .state_store
+        .save_dns_profile(profile)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn remove_dns_profile(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ResolverPolicy, String> {
+    let current = state.resolver.policy().await;
+    if state
+        .state_store
+        .dns_profiles()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|profile| profile.id == id && profile.policy == current)
+    {
+        let next = ResolverPolicy {
+            mode: lumina_core::ResolverMode::System,
+            upstream_ip: None,
+            bootstrap_ips: Vec::new(),
+            doh_url: None,
+            server_name: None,
+            upstream_port: None,
+            ..current
+        };
+        set_resolver_policy(state.clone(), next).await?;
+    }
+    state
+        .state_store
+        .remove_dns_profile(&id)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(state.resolver.policy().await)
+}
+
+#[tauri::command]
+pub async fn apply_dns_profile(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ResolverPolicy, String> {
+    let profile = state
+        .state_store
+        .dns_profiles()
+        .map_err(|error| format!("{error:#}"))?
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or("DNS 配置不存在")?;
+    set_resolver_policy(state, profile.policy).await
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,9 +137,11 @@ async fn check(policy: ResolverPolicy, host: String) -> Result<NetworkReport, St
         "LuminaShelf/0.6 diagnostic",
         Some(Duration::from_secs(15)),
     )
-    .and_then(|client| client.client())
     .map_err(|error| format!("{error:#}"))?;
-    match client.get(target).send().await {
+    match client
+        .get(Url::parse(&target).map_err(|error| error.to_string())?)
+        .await
+    {
         Ok(response) => {
             report.http_status = Some(response.status().as_u16());
             if response.status().is_success() {
@@ -70,7 +163,7 @@ async fn check(policy: ResolverPolicy, host: String) -> Result<NetworkReport, St
                 report.http_error = Some(format!("书源返回 HTTP {}", response.status().as_u16()));
             }
         }
-        Err(error) => report.http_error = Some(format!("{:#}", error.without_url())),
+        Err(error) => report.http_error = Some(format!("{error:#}")),
     }
     report.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(report)
@@ -101,6 +194,15 @@ pub async fn optimize_network(state: State<'_, AppState>) -> Result<Optimization
     let mut current = existing.clone();
     current.fallback_to_system = false;
     candidates.push(("当前配置".to_string(), current));
+    for profile in state
+        .state_store
+        .dns_profiles()
+        .map_err(|error| format!("{error:#}"))?
+    {
+        let mut policy = profile.policy;
+        policy.fallback_to_system = false;
+        candidates.push((profile.name, policy));
+    }
     for (label, mode, endpoint) in [
         ("系统网络", lumina_core::ResolverMode::System, None),
         (
@@ -125,7 +227,17 @@ pub async fn optimize_network(state: State<'_, AppState>) -> Result<Optimization
         };
         candidates.push((label.to_string(), policy));
     }
-    let mut reports = stream::iter(candidates)
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for (label, policy) in candidates {
+        let key = serde_json::to_value(&policy)
+            .map_err(|error| error.to_string())?
+            .to_string();
+        if seen.insert(key) {
+            unique.push((label, policy));
+        }
+    }
+    let mut reports = stream::iter(unique)
         .map(|(label, policy)| async move {
             let report = check(policy.clone(), "gutendex.com".into()).await;
             (label, policy, report)

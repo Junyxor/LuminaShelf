@@ -540,7 +540,7 @@ fn extract_html_title(html: &str) -> Option<String> {
     None
 }
 
-fn html_to_text(html: &str) -> String {
+pub(crate) fn html_to_text(html: &str) -> String {
     let Ok(document) = roxmltree::Document::parse(html) else {
         return strip_markup_fallback(html);
     };

@@ -11,17 +11,27 @@ pub struct NetworkClient {
     resolver: AppResolver,
     user_agent: Arc<str>,
     timeout: Option<Duration>,
+    allow_redirects: bool,
     cached: Arc<Mutex<(u64, Client)>>,
 }
 
 impl NetworkClient {
     pub fn new(resolver: AppResolver, user_agent: &str, timeout: Option<Duration>) -> Result<Self> {
-        let client = Self::build(&resolver, user_agent, timeout)?;
+        Self::with_redirects(resolver, user_agent, timeout, true)
+    }
+    pub fn with_redirects(
+        resolver: AppResolver,
+        user_agent: &str,
+        timeout: Option<Duration>,
+        allow_redirects: bool,
+    ) -> Result<Self> {
+        let client = Self::build(&resolver, user_agent, timeout, allow_redirects)?;
         Ok(Self {
             cached: Arc::new(Mutex::new((resolver.revision(), client))),
             resolver,
             user_agent: user_agent.into(),
             timeout,
+            allow_redirects,
         })
     }
     pub fn client(&self) -> Result<Client> {
@@ -33,15 +43,38 @@ impl NetworkClient {
         if cache.0 != revision {
             *cache = (
                 revision,
-                Self::build(&self.resolver, &self.user_agent, self.timeout)?,
+                Self::build(
+                    &self.resolver,
+                    &self.user_agent,
+                    self.timeout,
+                    self.allow_redirects,
+                )?,
             );
         }
         Ok(cache.1.clone())
+    }
+    pub async fn get(&self, url: url::Url) -> Result<reqwest::Response> {
+        for attempt in 0..2 {
+            match self.client()?.get(url.clone()).send().await {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if attempt == 0
+                        && (error.is_connect() || error.is_timeout() || error.is_request()) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::new(error.without_url()).context("HTTPS 连接失败"))
+                }
+            }
+        }
+        unreachable!()
     }
     fn build(
         resolver: &AppResolver,
         user_agent: &str,
         timeout: Option<Duration>,
+        allow_redirects: bool,
     ) -> Result<Client> {
         let mut builder: ClientBuilder = Client::builder()
             .connect_timeout(Duration::from_secs(8))
@@ -49,6 +82,11 @@ impl NetworkClient {
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
             .user_agent(user_agent)
+            .redirect(if allow_redirects {
+                reqwest::redirect::Policy::limited(5)
+            } else {
+                reqwest::redirect::Policy::none()
+            })
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())));
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
@@ -67,6 +105,42 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+    #[tokio::test]
+    async fn account_clients_keep_redirects_disabled_after_network_changes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            let received = socket.read(&mut buffer).await.unwrap();
+            assert!(received > 0);
+            socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/should-not-receive-account-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        let resolver = AppResolver::system().unwrap();
+        let client = NetworkClient::with_redirects(
+            resolver.clone(),
+            "test",
+            Some(Duration::from_secs(2)),
+            false,
+        )
+        .unwrap();
+        resolver
+            .set_host_override("redirect.invalid", vec!["127.0.0.1".parse().unwrap()])
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .client()
+                .unwrap()
+                .get(format!("http://redirect.invalid:{port}/"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FOUND
+        );
+        server.await.unwrap();
+    }
 
     async fn endpoint(
         ip: &str,

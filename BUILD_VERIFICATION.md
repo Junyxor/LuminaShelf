@@ -1,5 +1,45 @@
 # Release validation
 
+## 0.7.0 acceptance record — 2026-10-15
+
+The 0.7 release target is application ID `app.luminashelf.client`, version code
+7000, minimum SDK 24, target SDK 36, and the existing RSA-3072 signing certificate.
+
+Locally completed checks:
+
+- 44 core tests and 7 Tauri bridge tests, including real HTTPS DoH wire requests,
+  persistent named DNS/favorites, JSON download descriptor validation, redirect
+  handling, Chinese TXT/EPUB round trips and mirror-table exclusion rules.
+- Production TypeScript/Vite build and headless UI workflows at 320/390/768/1280 px:
+  DNS add/edit/select/delete/reload, optional multiple bootstrap IPs, independent
+  favorites, selected download format, long-press file management, 48 px reader
+  controls, mirror testing and an honest “no published release” update state.
+- A hidden real Windows Tauri instance completed DNS application with system
+  fallback disabled, automatic selection followed by real search, a 189,249-byte
+  EPUB download and native chapter read, TXT/PDF import, PDF rendering/page/zoom
+  progress, TXT→EPUB→TXT conversion and scoped deletion of a QA-managed file.
+- Live directory and GitHub community-table retrieval produced 22 unique mirror
+  candidates; `zlib.bz` passed current EAPI checks. Selecting it returned 100 actual
+  popularity cards, real details and the actual available format. These are
+  time-specific reachability results, not a guarantee for every network.
+- Announcement checks returned no current source campaign; source HTML returned
+  HTTP 503 and was reported. The project had no published GitHub Release and was
+  reported as such. No login, email, cloud save, donation or external application
+  was invoked by the QA scripts.
+
+The scripts write fresh evidence under `artifacts/testing/v07/`. UI fixtures are
+separate from live native checks. GitHub Actions defines signed build and Android
+launch verification; its actual run conclusion and uploaded artifacts are the
+authoritative CI result. APK identity/source/hash data is generated in
+`artifacts/android/*-build-info.json` by the release script.
+
+Real-device document providers, installed external reader/share applications and
+authenticated vendor conversion/email/Kindle/cloud actions remain manual checks
+listed in `docs/ANDROID_ACCEPTANCE.md`. Website actions use explicit website
+entry points; local text conversion and Android system sharing are separate features.
+
+## 0.6 historical validation
+
 Prepared on 2026-10-14 from upstream commit `8bf3baa` plus the release and light-reader/network changes.
 
 The release target is LuminaShelf 0.6.0 with application ID

@@ -45,7 +45,7 @@ does not require an active network and DNS follows VPN/Private DNS/network chang
 
 ## Output and signing identity
 
-`artifacts/android/LuminaShelf-0.6.0-universal-release.apk` is the installable release.
+`artifacts/android/LuminaShelf-0.7.0-universal-release.apk` is the installable release.
 The same folder contains its `.sha256` checksum, `release-certificate.pem` and
 `universal-build-info.json`. Release builds use R8 and optimized, stripped Rust
 libraries; native ELF segments and APK native library entries are aligned for
@@ -79,7 +79,7 @@ node scripts/android-build.mjs --debug x86_64
 Install an APK with Android Platform Tools:
 
 ```bash
-adb install -r artifacts/android/LuminaShelf-0.6.0-universal-release.apk
+adb install -r artifacts/android/LuminaShelf-0.7.0-universal-release.apk
 ```
 
 The app-local default download folder on Android is under
@@ -88,3 +88,30 @@ supports EPUB/PDF/TXT imports using Android's Storage Access Framework picker.
 Selected content URIs are streamed into private app storage; no broad storage
 permission is requested. The picker opens only after an explicit import action.
 Z-Library account tests require a user-owned account and a reachable EAPI origin.
+
+## GitHub Actions and signing Secrets
+
+The `Android CI` workflow checks TypeScript, Rust libraries, formatting, Clippy and
+the production frontend at four widths before building a signed universal APK.
+It uses Windows with SDK 36 / NDK 27.2 / JDK 17 and two build workers. The subsequent
+Ubuntu job boots the actual signed APK in a headless Android 35 emulator and
+collects the UI tree, screenshot and logcat. A launch check does not substitute for
+account, reader-file, sharing and document-provider acceptance on real devices.
+
+The following repository Actions Secrets hold the existing release identity:
+
+- `LUMINASHELF_ANDROID_KEYSTORE`: base64-encoded PKCS#12 keystore.
+- `LUMINASHELF_ANDROID_STORE_PASSWORD`: keystore password.
+- `LUMINASHELF_ANDROID_KEY_ALIAS`: original alias.
+
+`scripts/upload-signing-secrets.mjs` uploads them using authenticated GitHub CLI
+stdin without printing values. `scripts/restore-signing.mjs` reconstructs the private
+files only on the build runner. Private files are excluded from Git/artifacts and
+removed in the final workflow step. CI refuses to generate a replacement key, and
+release signing verifies the existing public certificate fingerprint.
+
+Run the workflow manually on the desired branch. Keep `publish_prerelease` false
+for an artifact-only build; turn it on and supply an explicit `v` tag only when
+publishing a prerelease. A pushed `v*` tag publishes a release. The uploaded artifact
+is named `LuminaShelf-signed-universal`; the Android launch evidence is
+`Android-release-smoke`.

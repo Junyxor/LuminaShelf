@@ -2,7 +2,29 @@
 
 LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri + React UI.
 
-## 0.6.0 — 浅色书架与可配置网络
+## 0.7.0 — 收藏、书源与下载管理
+
+“收藏”只保存远程书籍条目，“下载”另外保存离线文件。找书页直接读取古登堡热门、
+Z-Library 网站热门或已登录账户的推荐，点击卡片再读取真实详情和可用格式。
+下载会先解析书源的文件描述符，再请求真正的文件，并检查内容后入库；不把 JSON、
+登录页或验证页伪装成 EPUB。已下载书籍支持长按管理、重新获取、导出、本地 TXT ↔ EPUB
+文字转换和删除应用管理的副本。Android 支持通过系统文件授权交给外部阅读器，
+也可使用系统分享菜单发送给已安装的邮箱或云盘应用。
+
+DNS 设置采用明确的“添加、编辑、测试、使用、删除”列表，可保存多组配置和多个可选引导 IP；
+0.6 的既有自定义配置会迁移进列表。镜像设置内置候选站点、书源域名目录和带来源标记的
+GitHub 社区镜像表；支持拉取、去重、限量检测、手动选择及自己的发布清单。
+社区表仅读取当前有效区，不采集失效区、钓鱼黑名单或无关外链。
+
+公告区分别显示本项目公告和当前书源实际提供的公告/活动链接；站点未提供时如实显示状态。
+更新检查读取本项目 GitHub Releases，区分“没有已发布版本”、连接失败和有可用更新。
+官网转码、邮箱/Kindle/Google Drive 等服务的具体操作仍使用官网入口，受网站和账户权限约束；
+未把未核实接口包装成本地发送成功。本地转换只支持经回读验证的 TXT/EPUB 文字内容。
+
+参考与边界：[FluxDO 核对](docs/fluxdo-reference.md)、[书源协议与下载问题](docs/book-source-discovery.md)、
+[公告和更新来源](docs/announcements-update-sources.md)。
+
+## 浅色界面与可配置网络
 
 默认浅色书架；手机底部固定提供“书架、找书、下载、设置”四个文字入口。
 设置入口高 62 px，主要操作触控区域至少 48 px。阅读器默认纸白色，可主动切换护眼或夜间配色。
@@ -109,6 +131,11 @@ SHA-256 checksum and public certificate are written to `artifacts/android/`.
 The first run generates a release keystore and credentials in `.signing/`; subsequent
 builds reuse that identity. Both directories are ignored by Git. See
 [Android release instructions](ANDROID_RELEASE.md) for environment setup and key backups.
+
+The `Android CI` workflow runs checks, signs the three-ABI release with repository
+Secrets, uploads the APK/checksum/public certificate, and can boot it in a headless
+Android emulator. Manual builds default to no GitHub Release publication. Publishing
+requires the workflow's explicit release input or a pushed `v*` tag.
 
 ## Status
 

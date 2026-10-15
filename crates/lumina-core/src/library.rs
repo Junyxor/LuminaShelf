@@ -1,11 +1,53 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::{
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+pub fn validate_readable_file(path: &Path) -> Result<()> {
+    let mut file = fs::File::open(path).context("书籍文件不存在或已被移动")?;
+    let mut header = vec![0; 4096];
+    let count = file.read(&mut header)?;
+    header.truncate(count);
+    anyhow::ensure!(count > 0, "书籍文件为空，请重新下载");
+    let text = String::from_utf8_lossy(&header);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    let lower = text.to_ascii_lowercase();
+    anyhow::ensure!(
+        !lower.starts_with("<!doctype html") && !lower.starts_with("<html"),
+        "下载到的是网页或登录验证页，请更换站点并重新下载"
+    );
+    if text.starts_with('{') {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&header) {
+            anyhow::ensure!(
+                value.get("success").is_none()
+                    && value.get("file").is_none()
+                    && value.get("error").is_none(),
+                "文件是书源接口 JSON，不是电子书，请重新下载"
+            );
+        }
+    }
+    match LibraryFormat::from_path(path) {
+        LibraryFormat::Epub => {
+            crate::open_book_metadata(path).context("EPUB 内容损坏或格式不正确，请重新下载")?;
+        }
+        LibraryFormat::Pdf => {
+            anyhow::ensure!(
+                header.starts_with(b"%PDF-"),
+                "文件不是真正的 PDF，请重新下载"
+            );
+        }
+        LibraryFormat::Txt => {
+            crate::open_book_metadata(path).context("无法读取文本编码")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

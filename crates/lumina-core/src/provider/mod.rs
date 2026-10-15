@@ -4,8 +4,8 @@ mod zlibrary;
 
 pub use gutendex::GutendexProvider;
 pub use models::{
-    BookDetails, BookFormat, BookSummary, ProviderCapabilities, ProviderDescriptor, SearchQuery,
-    SearchResult,
+    BookDetails, BookFormat, BookSummary, DiscoveryPage, ProviderCapabilities, ProviderDescriptor,
+    SearchQuery, SearchResult,
 };
 pub use zlibrary::{
     ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider, ZLibrarySession,
@@ -24,8 +24,14 @@ pub trait BookProvider: Send + Sync {
     async fn search(&self, query: SearchQuery) -> Result<SearchResult>;
     async fn details(&self, id: &str) -> Result<BookDetails>;
     async fn acquisition_url(&self, id: &str, format: BookFormat) -> Result<url::Url>;
+    async fn discover(&self) -> Result<DiscoveryPage> {
+        Err(anyhow!("书源暂未提供首页"))
+    }
     async fn download_headers(&self) -> Result<reqwest::header::HeaderMap> {
         Ok(reqwest::header::HeaderMap::new())
+    }
+    async fn download_headers_for(&self, _url: &url::Url) -> Result<reqwest::header::HeaderMap> {
+        self.download_headers().await
     }
 }
 
@@ -35,6 +41,26 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub async fn discover(&self, provider_id: &str) -> Result<DiscoveryPage> {
+        let provider = self
+            .providers
+            .get(provider_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| anyhow!("书源不存在"))?;
+        provider.discover().await
+    }
+    pub async fn download_headers_for(
+        &self,
+        provider_id: &str,
+        url: &url::Url,
+    ) -> Result<reqwest::header::HeaderMap> {
+        let provider = self
+            .providers
+            .get(provider_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| anyhow!("书源不存在"))?;
+        provider.download_headers_for(url).await
+    }
     pub fn register<P: BookProvider + 'static>(&self, provider: P) {
         self.providers
             .insert(provider.id().to_string(), Arc::new(provider));

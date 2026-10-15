@@ -5,11 +5,24 @@ The light reader UI uses these established projects:
 - [Radix Dialog](https://github.com/radix-ui/primitives), MIT: accessible modal focus management, keyboard dismissal and background interaction handling.
 - [Lucide](https://github.com/lucide-icons/lucide), ISC, with some Feather-derived icons under MIT: navigation and action icons.
 - [Tauri dialog and filesystem plugins](https://github.com/tauri-apps/plugins-workspace), MIT OR Apache-2.0: Android document selection and content URI access.
+- [Tauri opener](https://github.com/tauri-apps/plugins-workspace), MIT OR Apache-2.0: explicit external website/default desktop application opening.
+- [Scraper](https://github.com/rust-scraper/scraper), ISC, and HTML5ever, MIT OR Apache-2.0: parse source announcement markup without executing page scripts.
+- [html-escape](https://github.com/magiclen/html-escape), MIT: decode book-title and description entities.
 - [React](https://github.com/facebook/react), MIT: UI rendering.
 - [PDF.js](https://github.com/mozilla/pdf.js), Apache-2.0: local PDF rendering using native range IPC.
 - [Reqwest](https://github.com/seanmonstar/reqwest), MIT OR Apache-2.0, [Hickory DNS](https://github.com/hickory-dns/hickory-dns), MIT OR Apache-2.0, and [Rustls](https://github.com/rustls/rustls), Apache-2.0 OR ISC OR MIT: HTTP, DNS wire encoding, encrypted DNS and TLS certificate validation.
 
 [Readest](https://github.com/readest/readest) was inspected for conventional reader layout and navigation. It is AGPL-3.0; its implementation was not copied into LuminaShelf. The light UI is implemented within this repository.
+
+[FluxDO](https://github.com/Lingyan000/fluxdo), GPL-3.0, was inspected for the named
+DNS-list interaction and source-backed homepage/cache flow. No Dart/Rust implementation,
+assets, MITM transport or certificate-installation flow was copied. Its separate proxy
+submodule was not incorporated. See `docs/fluxdo-reference.md` for pinned references.
+
+[Awesome-Zlibrary](https://github.com/dongyubin/Awesome-Zlibrary) is an optional
+community address publication. Only HTTPS addresses in its active mirror table are
+read as data; source attribution is retained. A publisher's wording does not establish
+independent official affiliation, and every candidate is tested separately.
 
 Package versions and complete transitive dependency identities are recorded in `package-lock.json` and `Cargo.lock`. Original license files remain available in the linked upstream repositories and installed dependency packages.
 

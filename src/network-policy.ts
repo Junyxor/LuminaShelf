@@ -1,15 +1,17 @@
 export type ResolverMode = "system" | "app_hosts" | "doh" | "dot" | "custom_dns";
 export type ResolverPolicy = {
   mode: ResolverMode; appHosts: Record<string, string[]>; upstreamIp?: string | null;
+  bootstrapIps?: string[];
   serverName?: string | null; dohPath?: string | null; dohUrl?: string | null;
   upstreamPort?: number | null; proxyUrl?: string | null; fallbackToSystem: boolean; timeoutMs: number;
 };
-export const defaultPolicy: ResolverPolicy = { mode: "system", appHosts: {}, upstreamIp: null, serverName: null, dohPath: "/dns-query", dohUrl: null, upstreamPort: null, proxyUrl: null, fallbackToSystem: true, timeoutMs: 5000 };
+export const defaultPolicy: ResolverPolicy = { mode: "system", appHosts: {}, upstreamIp: null, bootstrapIps: [], serverName: null, dohPath: "/dns-query", dohUrl: null, upstreamPort: null, proxyUrl: null, fallbackToSystem: true, timeoutMs: 5000 };
 export const dnsPresets = [
   { name: "阿里", url: "https://dns.alidns.com/dns-query" },
   { name: "腾讯", url: "https://doh.pub/dns-query" },
   { name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query" },
 ] as const;
+export function dohAddress(policy: ResolverPolicy) { return policy.dohUrl || (policy.serverName ? `https://${policy.serverName}${policy.upstreamPort && policy.upstreamPort !== 443 ? `:${policy.upstreamPort}` : ""}${policy.dohPath || "/dns-query"}` : ""); }
 export function formatHosts(entries: Record<string, string[]>) { return Object.entries(entries).flatMap(([host, ips]) => ips.map((ip) => `${ip} ${host}`)).join("\n"); }
 export function parseHosts(text: string): Record<string, string[]> {
   const entries: Record<string, string[]> = {};
@@ -32,10 +34,11 @@ export function parseHosts(text: string): Record<string, string[]> {
   return entries;
 }
 export function cleanPolicy(draft: ResolverPolicy, hosts: string): ResolverPolicy {
-  const policy: ResolverPolicy = { ...draft, appHosts: parseHosts(hosts), upstreamIp: draft.upstreamIp?.trim() || null, serverName: draft.serverName?.trim() || null, dohUrl: draft.dohUrl?.trim() || null, proxyUrl: draft.proxyUrl?.trim() || null, upstreamPort: draft.upstreamPort || null };
+  const policy: ResolverPolicy = { ...draft, appHosts: parseHosts(hosts), upstreamIp: draft.upstreamIp?.trim() || null, serverName: draft.serverName?.trim() || null, dohUrl: draft.dohUrl?.trim() || null, proxyUrl: draft.proxyUrl?.trim() || null, upstreamPort: draft.upstreamPort ?? null };
   if (policy.mode === "doh") {
-    if (!policy.dohUrl && policy.serverName) policy.dohUrl = `https://${policy.serverName}${policy.dohPath || "/dns-query"}`;
-    const endpoint = new URL(policy.dohUrl || "");
+    if (!policy.dohUrl && policy.serverName) policy.dohUrl = dohAddress(policy);
+    let endpoint: URL;
+    try { endpoint = new URL(policy.dohUrl || ""); } catch { throw new Error("请填写完整的 DoH HTTPS 地址"); }
     if (endpoint.protocol !== "https:") throw new Error("DoH 地址需要以 https:// 开头");
     if (endpoint.hash) throw new Error("DoH 地址不能包含 # 片段");
   }

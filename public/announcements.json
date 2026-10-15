@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "id": "luminashelf-0.7-workflows",
+      "title": "星书 0.7 功能说明",
+      "body": "收藏和下载现在独立管理。网络设置支持保存多组 DNS 配置，书源镜像可拉取、检测与选择。找书首页显示所选书源的实际热门或推荐，已下载文件支持管理与 TXT/EPUB 本地转换。Android 外部阅读、系统分享和需要账户权限的官网服务仍需在设备与对应账户中核查。",
+      "publishedAt": "2026-10-15",
+      "kind": "release",
+      "url": "https://github.com/Junyxor/LuminaShelf"
+    }
+  ]
+}

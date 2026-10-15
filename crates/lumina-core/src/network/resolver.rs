@@ -26,12 +26,13 @@ pub enum ResolverMode {
     CustomDns,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ResolverPolicy {
     pub mode: ResolverMode,
     pub app_hosts: HashMap<String, Vec<IpAddr>>,
     pub upstream_ip: Option<IpAddr>,
+    pub bootstrap_ips: Vec<IpAddr>,
     pub server_name: Option<String>,
     pub doh_path: Option<String>,
     pub doh_url: Option<String>,
@@ -47,6 +48,7 @@ impl Default for ResolverPolicy {
             mode: ResolverMode::System,
             app_hosts: HashMap::new(),
             upstream_ip: None,
+            bootstrap_ips: Vec::new(),
             server_name: None,
             doh_path: Some("/dns-query".to_string()),
             doh_url: None,
@@ -56,6 +58,22 @@ impl Default for ResolverPolicy {
             timeout_ms: 3_000,
         }
     }
+}
+
+impl ResolverPolicy {
+    pub fn validated(self) -> Result<Self> {
+        let policy = normalize_policy(self)?;
+        validate_policy(&policy)?;
+        Ok(policy)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProfile {
+    pub id: String,
+    pub name: String,
+    pub policy: ResolverPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +248,7 @@ fn resolver_transport_changed(before: &ResolverPolicy, after: &ResolverPolicy) -
     }
     before.mode != after.mode
         || before.upstream_ip != after.upstream_ip
+        || before.bootstrap_ips != after.bootstrap_ips
         || before.server_name != after.server_name
         || before.doh_path != after.doh_path
         || before.doh_url != after.doh_url
@@ -354,6 +373,16 @@ fn validate_policy(policy: &ResolverPolicy) -> Result<()> {
 }
 
 fn normalize_policy(mut policy: ResolverPolicy) -> Result<ResolverPolicy> {
+    if policy.mode == ResolverMode::Doh {
+        if let Some(ip) = policy.upstream_ip.take() {
+            policy.bootstrap_ips.push(ip);
+        }
+    }
+    policy.bootstrap_ips.sort_unstable();
+    policy.bootstrap_ips.dedup();
+    if policy.bootstrap_ips.len() > 16 {
+        return Err(anyhow!("最多填写 16 个引导 IP"));
+    }
     policy.app_hosts = policy
         .app_hosts
         .into_iter()

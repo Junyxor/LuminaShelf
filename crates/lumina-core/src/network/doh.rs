@@ -62,9 +62,17 @@ impl DohResolver {
             .timeout(Duration::from_millis(policy.timeout_ms))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(format!("LuminaShelf/{} DoH", env!("CARGO_PKG_VERSION")));
+        let mut bootstrap: Vec<_> = policy
+            .bootstrap_ips
+            .iter()
+            .copied()
+            .map(|ip| SocketAddr::new(ip, 0))
+            .collect();
         if let Some(ip) = policy.upstream_ip {
-            builder =
-                builder.resolve_to_addrs(endpoint.host_str().unwrap(), &[SocketAddr::new(ip, 0)]);
+            bootstrap.push(SocketAddr::new(ip, 0));
+        }
+        if !bootstrap.is_empty() {
+            builder = builder.resolve_to_addrs(endpoint.host_str().unwrap(), &bootstrap);
         }
         if let Some(proxy) = &policy.proxy_url {
             builder = builder.proxy(reqwest::Proxy::all(proxy).context("代理地址无效")?);

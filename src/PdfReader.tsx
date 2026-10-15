@@ -242,9 +242,9 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
             <small>{numPages ? `第 ${pageNumber} / ${numPages} 页` : "正在载入 PDF…"}</small>
           </div>
           <div className="pdf-zoom-controls">
-            <button onClick={() => setZoom((value) => Math.max(0.6, Math.round((value - 0.1) * 10) / 10))}>−</button>
+            <button aria-label="缩小 PDF" onClick={() => setZoom((value) => Math.max(0.25, Math.round((value - 0.1) * 10) / 10))}>−</button>
             <strong>{Math.round(zoom * 100)}%</strong>
-            <button onClick={() => setZoom((value) => Math.min(2.5, Math.round((value + 0.1) * 10) / 10))}>+</button>
+            <button aria-label="放大 PDF" onClick={() => setZoom((value) => Math.min(2.5, Math.round((value + 0.1) * 10) / 10))}>+</button>
           </div>
         </header>
 

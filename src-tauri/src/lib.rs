@@ -1,7 +1,10 @@
+mod announcement_commands;
 mod imports;
+mod library_commands;
 mod network_commands;
 mod pdf;
 mod reader_bridge;
+mod source_commands;
 
 use lumina_core::network::NetworkClient;
 use lumina_core::{
@@ -24,10 +27,12 @@ use tokio::sync::RwLock;
 use url::Url;
 
 const ZLIBRARY_CANDIDATES: &[&str] = &[
+    "https://zlib.bz",
+    "https://z-library.sk",
+    "https://1lib.sk",
     "https://z-lib.gd",
     "https://z-lib.gl",
     "https://z-library.ec",
-    "https://zlib.bz",
     "https://article.sk",
     "https://articles.sk",
 ];
@@ -419,7 +424,7 @@ async fn download_book(
         .map_err(|error| error.to_string())?;
     let headers = state
         .providers
-        .download_headers(&provider_id)
+        .download_headers_for(&provider_id, &url)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -440,6 +445,12 @@ async fn download_book(
         &provider_id,
         &book_id,
     );
+    if destination.is_file() && lumina_core::library::validate_readable_file(&destination).is_err()
+    {
+        let preserved = destination.with_file_name(format!(".invalid-{}", uuid::Uuid::new_v4()));
+        fs::rename(&destination, preserved)
+            .map_err(|error| format!("无法保留旧错误文件以重新下载：{error}"))?;
+    }
     let downloader =
         SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
             .map_err(|error| error.to_string())?;
@@ -473,7 +484,9 @@ async fn download_book(
         )
         .await;
     let _ = monitor.await;
-    result.map_err(|error| error.to_string())?;
+    result.map_err(|error| format!("{error:#}"))?;
+    lumina_core::library::validate_readable_file(&destination)
+        .map_err(|error| format!("下载文件校验失败，未加入已下载书架：{error:#}"))?;
 
     let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
         .map_err(|error| error.to_string())?;
@@ -506,6 +519,7 @@ async fn select_automatic_zlibrary_origin(state: &AppState) -> Result<Url, Strin
 
     let mut seen = HashSet::new();
     let mut failures = Vec::new();
+    let mut origins = Vec::new();
     for candidate in candidates {
         let Ok(origin) = normalize_origin(&candidate) else {
             continue;
@@ -514,7 +528,18 @@ async fn select_automatic_zlibrary_origin(state: &AppState) -> Result<Url, Strin
         if !seen.insert(key.clone()) {
             continue;
         }
-        match probe_zlibrary_origin(state, &origin).await {
+        origins.push(origin);
+    }
+    use futures::{stream, StreamExt};
+    let probes = stream::iter(origins)
+        .map(|origin| async move {
+            let result = probe_zlibrary_origin(state, &origin).await;
+            (origin, result)
+        })
+        .buffer_unordered(2);
+    tokio::pin!(probes);
+    while let Some((origin, result)) = probes.next().await {
+        match result {
             Ok(()) => return Ok(origin),
             Err(error) => failures.push(format!("{}: {error}", origin.host_str().unwrap_or("?"))),
         }
@@ -549,15 +574,17 @@ async fn probe_zlibrary_origin(state: &AppState, origin: &Url) -> Result<(), Str
         .map_err(|error| format!("read EAPI probe: {error}"))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| format!("expected EAPI JSON, received non-JSON HTTP {status}"))?;
-    if value.is_null() {
-        return Err("EAPI probe returned an empty JSON value".to_string());
-    }
+    source_commands::parse_directory(&value)?;
     Ok(())
 }
 
 fn normalize_origin(value: &str) -> Result<Url, String> {
     let mut url = Url::parse(value).map_err(|error| format!("invalid EAPI origin: {error}"))?;
-    if url.scheme() != "https" || url.host_str().is_none() {
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return Err("EAPI origin must be an HTTPS host".to_string());
     }
     url.set_path("/");
@@ -659,6 +686,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -674,12 +702,35 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             core_status,
+            announcement_commands::announcement_feeds,
+            announcement_commands::check_app_update,
+            announcement_commands::open_announcement_link,
             provider_descriptors,
             resolver_policy,
             set_resolver_policy,
             network_commands::test_network,
+            network_commands::dns_profiles,
+            network_commands::save_dns_profile,
+            network_commands::remove_dns_profile,
+            network_commands::apply_dns_profile,
             network_commands::optimize_network,
             network_commands::book_cover_bytes,
+            library_commands::favorite_books,
+            library_commands::delete_library_download,
+            library_commands::set_book_favorite,
+            library_commands::discover_books,
+            library_commands::book_download_options,
+            library_commands::validate_library_file,
+            library_commands::convert_library_book,
+            library_commands::export_library_book,
+            library_commands::open_external_file,
+            library_commands::open_book_website,
+            source_commands::mirror_configuration,
+            source_commands::save_mirror_subscription,
+            source_commands::add_book_mirror,
+            source_commands::remove_book_mirror,
+            source_commands::refresh_book_mirrors,
+            source_commands::select_book_mirror,
             imports::import_local_books,
             imports::import_paths,
             imports::remove_library_item,

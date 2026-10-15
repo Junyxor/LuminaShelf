@@ -1,5 +1,6 @@
 use crate::{
     library::{now_unix_ms, LibraryFormat, LibraryItem},
+    network::DnsProfile,
     user_state::{AccountProfile, FavoriteBook, ReadingProgress},
 };
 use anyhow::{Context, Result};
@@ -50,6 +51,15 @@ impl StateStore {
     fn migrate(&self) -> Result<()> {
         self.conn()?.execute_batch(
             r#"
+            CREATE TABLE IF NOT EXISTS app_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS dns_profiles (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              policy_json TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS accounts (
               id TEXT PRIMARY KEY,
               provider_id TEXT NOT NULL,
@@ -242,6 +252,66 @@ impl StateStore {
         Ok(())
     }
 
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn()?
+            .query_row(
+                "SELECT value FROM app_settings WHERE key=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn()?.execute("INSERT INTO app_settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,value])?;
+        Ok(())
+    }
+
+    pub fn dns_profiles(&self) -> Result<Vec<DnsProfile>> {
+        let connection = self.conn()?;
+        let mut statement =
+            connection.prepare("SELECT id,name,policy_json FROM dns_profiles ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, name, json) = row?;
+            Ok(DnsProfile {
+                id,
+                name,
+                policy: serde_json::from_str(&json)?,
+            })
+        })
+        .collect()
+    }
+
+    pub fn save_dns_profile(&self, mut profile: DnsProfile) -> Result<DnsProfile> {
+        profile.name = profile.name.trim().to_string();
+        anyhow::ensure!(
+            !profile.name.is_empty() && profile.name.chars().count() <= 80,
+            "DNS 名称需为 1–80 个字符"
+        );
+        profile.policy = profile.policy.validated()?;
+        if profile.id.is_empty() {
+            profile.id = uuid::Uuid::new_v4().to_string();
+        }
+        let json = serde_json::to_string(&profile.policy)?;
+        self.conn()?.execute("INSERT INTO dns_profiles(id,name,policy_json) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name,policy_json=excluded.policy_json", params![profile.id,profile.name,json])?;
+        Ok(profile)
+    }
+
+    pub fn remove_dns_profile(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn()?
+            .execute("DELETE FROM dns_profiles WHERE id=?1", [id])?
+            == 1)
+    }
+
     pub fn upsert_library_item(&self, item: &LibraryItem) -> Result<()> {
         let authors = serde_json::to_string(&item.authors)?;
         let size_bytes = i64::try_from(item.size_bytes).context("library item is too large")?;
@@ -406,6 +476,69 @@ fn library_format_from_str(value: &str) -> LibraryFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_dns_and_favorites_survive_reopening_without_creating_downloads() {
+        let directory =
+            std::env::temp_dir().join(format!("lumina-profiles-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("state.sqlite3");
+        let store = StateStore::open(&path).unwrap();
+        let policy = crate::ResolverPolicy {
+            mode: crate::ResolverMode::Doh,
+            doh_url: Some("https://dns.example.org:8443/custom?profile=mine".into()),
+            bootstrap_ips: vec![
+                "203.0.113.1".parse().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ],
+            ..Default::default()
+        };
+        let profile = store
+            .save_dns_profile(DnsProfile {
+                id: String::new(),
+                name: "我的 DNS".into(),
+                policy,
+            })
+            .unwrap();
+        let mut edited = profile.clone();
+        edited.name = "改名后的 DNS".into();
+        store.save_dns_profile(edited).unwrap();
+        store
+            .upsert_favorite(&FavoriteBook {
+                provider_id: "gutendex".into(),
+                book_id: "11".into(),
+                title: "收藏测试".into(),
+                authors: vec![],
+                format: Some("epub".into()),
+                cover_url: None,
+                added_at_unix_ms: 1,
+            })
+            .unwrap();
+        assert!(store.list_library_items().unwrap().is_empty());
+        drop(store);
+        let reopened = StateStore::open(&path).unwrap();
+        let records = reopened.dns_profiles().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, profile.id);
+        assert_eq!(records[0].name, "改名后的 DNS");
+        assert_eq!(records[0].policy.doh_url, profile.policy.doh_url);
+        assert_eq!(records[0].policy.bootstrap_ips.len(), 2);
+        assert_eq!(reopened.list_favorites().unwrap().len(), 1);
+        assert!(reopened.list_library_items().unwrap().is_empty());
+        reopened.remove_dns_profile(&profile.id).unwrap();
+        assert!(reopened.dns_profiles().unwrap().is_empty());
+        drop(reopened);
+        for file in [
+            path,
+            directory.join("state.sqlite3-wal"),
+            directory.join("state.sqlite3-shm"),
+        ] {
+            if file.exists() {
+                std::fs::remove_file(file).unwrap();
+            }
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     fn account(id: &str, provider: &str, active: bool) -> AccountProfile {
         AccountProfile {

@@ -26,11 +26,8 @@ impl GutendexProvider {
 
     async fn fetch(&self, url: Url) -> Result<GutendexResponse> {
         self.client
-            .client()?
             .get(url)
-            .send()
             .await
-            .map_err(reqwest::Error::without_url)
             .context("书源 HTTPS 连接失败")?
             .error_for_status()
             .map_err(reqwest::Error::without_url)?
@@ -53,6 +50,18 @@ impl GutendexProvider {
 
 #[async_trait]
 impl BookProvider for GutendexProvider {
+    async fn discover(&self) -> Result<super::DiscoveryPage> {
+        let url = Url::parse("https://gutendex.com/books/?sort=popular")?;
+        let response = self.fetch(url.clone()).await?;
+        Ok(super::DiscoveryPage {
+            title: "古登堡热门".into(),
+            source_url: url.to_string(),
+            items: response.results.into_iter().map(to_summary).collect(),
+            fetched_at_unix_ms: crate::library::now_unix_ms(),
+            stale: false,
+            error: None,
+        })
+    }
     fn id(&self) -> &'static str {
         "gutendex"
     }

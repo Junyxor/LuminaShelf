@@ -31,6 +31,7 @@ export function prepareAndroid() {
   if (!content.includes("android.overridePathCheck=")) {
     content += "\n# Support Windows checkouts with non-ASCII directory names.\nandroid.overridePathCheck=true\n";
   }
+  if (!content.includes("org.gradle.workers.max=")) content += "\norg.gradle.workers.max=2\n";
   if (process.platform === "win32" && !content.includes("kotlin.incremental=")) {
     content += "\n# Kotlin caches cannot relativize Cargo sources across Windows drives.\nkotlin.incremental=false\nkotlin.compiler.execution.strategy=in-process\n";
   }
@@ -47,6 +48,7 @@ export function prepareAndroid() {
   const icons = resolve(root, "src-tauri/icons/android");
   if (existsSync(icons)) cpSync(icons, resolve(android, "app/src/main/res"), { recursive: true });
   cpSync(resolve(root, "src-tauri/android/MainActivity.kt"), resolve(android, "app/src/main/java/app/luminashelf/client/MainActivity.kt"));
+  cpSync(resolve(root, "src-tauri/android/file_paths.xml"), resolve(android, "app/src/main/res/xml/file_paths.xml"));
   for (const resource of ["values", "values-night"]) {
     const directory = resolve(android, "app/src/main/res", resource);
     mkdirSync(directory, { recursive: true });

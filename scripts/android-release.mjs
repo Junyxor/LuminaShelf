@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync,
@@ -40,6 +40,7 @@ const credentialsFile = join(signingDir, "release.json");
 if (existsSync(keystore) !== existsSync(credentialsFile)) {
   throw new Error("The release keystore and its credentials must be backed up/restored together.");
 }
+if (process.env.CI && !existsSync(keystore)) throw new Error("CI must restore the existing release signing identity from repository secrets.");
 const credentials = existsSync(credentialsFile)
   ? JSON.parse(readFileSync(credentialsFile, "utf8"))
   : { alias: "luminashelf", storePassword: randomBytes(32).toString("base64url") };
@@ -79,6 +80,10 @@ run(keytool, [
   "-exportcert", "-rfc", "-keystore", keystore, "-alias", credentials.alias,
   "-storepass:env", "LUMINASHELF_STORE_PASSWORD", "-file", join(output, "release-certificate.pem"),
 ], { env: signingEnv });
+const certificate = new X509Certificate(readFileSync(join(output, "release-certificate.pem")));
+if (certificate.fingerprint256.replaceAll(":", "").toLowerCase() !== "c8ccb838c8e3ca4460c0a18132bfe7a67a9a4d26365b33f3749aab199167e9ff") {
+  throw new Error("Release signing identity differs from the existing LuminaShelf certificate.");
+}
 const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
 const changes = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
 writeFileSync(join(output, `${flavor}-build-info.json`), `${JSON.stringify({
