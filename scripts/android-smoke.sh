@@ -39,6 +39,7 @@ for attempt in {1..20}; do
 done
 test "$ui_ready" = true
 python3 scripts/android-download-smoke.py
+if [[ "${LUMINA_SMOKE_UNIVERSAL_ONLY:-0}" != "1" ]]; then
 single_apk="$(find package/x86_64 -name '*-x86_64-release.apk' -type f -print -quit)"
 test -n "$single_apk"
 adb install -r "$single_apk"
@@ -54,6 +55,7 @@ for attempt in {1..15}; do
   sleep 1
 done
 test "$x64_ready" = true
+fi
 adb shell pidof app.luminashelf.client > smoke/pid.txt
 adb logcat -d > smoke/logcat.txt
 if grep -q 'Process: app.luminashelf.client.*PID:' smoke/logcat.txt; then
