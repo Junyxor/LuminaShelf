@@ -33,3 +33,10 @@ Three correctness findings, no unrelated expansion identified:
 
 Three findings on each axis were addressed. The highest severity on each axis
 was P1 (unbounded response-header wait and DNS address-family availability).
+
+Live hidden-native testing then reproduced an IPv6-only initial DNS answer on
+a Windows network without an IPv6 route. The resolver now checks local route
+availability without transmitting UDP packets before returning just one family;
+if that family has no route, it waits for the other query. Late answers still
+merge into the cache. The Android smoke selects a large Moby Dick EPUB through
+search, instead of depending on the first changing homepage recommendation.

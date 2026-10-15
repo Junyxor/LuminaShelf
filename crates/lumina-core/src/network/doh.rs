@@ -33,6 +33,16 @@ struct Answer {
     ips: Vec<IpAddr>,
     ttl: u32,
 }
+fn has_local_route(addresses: &[IpAddr]) -> bool {
+    addresses.iter().any(|ip| {
+        let local = if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        // UDP connect performs a local route lookup without sending any packet.
+        // A successful DNS answer is unusable if that address family has no route.
+        std::net::UdpSocket::bind(local)
+            .and_then(|socket| socket.connect(SocketAddr::new(*ip, 443)))
+            .is_ok()
+    })
+}
 
 pub(super) fn endpoint(policy: &ResolverPolicy) -> Result<Url> {
     let value = if let Some(value) = &policy.doh_url {
@@ -143,7 +153,10 @@ impl DohResolver {
                 (first.context("DoH 查询任务中断")?, a)
             }
         };
-        let second = if first.as_ref().is_ok_and(|answer| !answer.ips.is_empty()) {
+        let second = if first
+            .as_ref()
+            .is_ok_and(|answer| !answer.ips.is_empty() && has_local_route(&answer.ips))
+        {
             tokio::time::timeout(Duration::from_millis(150), &mut pending)
                 .await
                 .ok()
@@ -636,13 +649,13 @@ mod tests {
                 service_delayed(ResponseCode::NoError, false, 60, 2, Some(delayed)).await;
             let resolver = fixture_client(url, trust);
             let first = tokio::time::timeout(
-                Duration::from_millis(350),
+                Duration::from_millis(650),
                 resolver.lookup("books.fixture.test"),
             )
             .await
             .unwrap()
             .unwrap();
-            assert_eq!(first.len(), 1);
+            assert!(!first.is_empty());
             server.await.unwrap();
             let both = tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
