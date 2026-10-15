@@ -2,7 +2,9 @@ param(
     [string]$ApkPath,
     [string]$BuildInfoPath,
     [string]$ReportPath,
-    [string]$ExpectedCommit
+    [string]$ExpectedCommit,
+    [ValidateSet('universal', 'x86', 'x86_64', 'arm64-v8a', 'armeabi-v7a')]
+    [string]$Variant = 'universal'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,9 +13,10 @@ $package = Get-Content -LiteralPath (Join-Path $repository 'package.json') -Raw 
 $version = [string]$package.version
 $parts = $version.Split('.')
 $versionCode = [int]$parts[0] * 1000000 + [int]$parts[1] * 1000 + [int]$parts[2]
-if (-not $ApkPath) { $ApkPath = Join-Path $repository "artifacts/android/LuminaShelf-$version-universal-release.apk" }
-if (-not $BuildInfoPath) { $BuildInfoPath = Join-Path $repository 'artifacts/android/universal-build-info.json' }
-if (-not $ReportPath) { $ReportPath = Join-Path $repository 'artifacts/android/apk-verification.json' }
+if (-not $ApkPath) { $ApkPath = Join-Path $repository "artifacts/android/LuminaShelf-$version-$Variant-release.apk" }
+if (-not $BuildInfoPath) { $BuildInfoPath = Join-Path $repository "artifacts/android/$Variant-build-info.json" }
+if (-not $ReportPath) { $ReportPath = Join-Path $repository "artifacts/android/$Variant-apk-verification.json" }
+$expectedAbis = if ($Variant -eq 'universal') { @('arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64') } else { @($Variant) }
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
 if (-not $sdk -or -not $env:JAVA_HOME) { throw 'Set ANDROID_HOME and JAVA_HOME before verification' }
 $ndk = if ($env:NDK_HOME) { $env:NDK_HOME } else { Join-Path $sdk 'ndk/27.2.12479018' }
@@ -52,6 +55,7 @@ try {
         $architecture = @{
             'arm64-v8a' = @{ elfClass = 2; machine = 183 }
             'armeabi-v7a' = @{ elfClass = 1; machine = 40 }
+            'x86' = @{ elfClass = 1; machine = 3 }
             'x86_64' = @{ elfClass = 2; machine = 62 }
         }[$abi]
         if ($null -eq $architecture) { throw "Unexpected native architecture: $abi" }
@@ -91,24 +95,25 @@ try {
 } finally {
     $archive.Dispose()
     # Only explicit files in this invocation's unique temporary directory are removed.
-    foreach ($abi in @('arm64-v8a', 'armeabi-v7a', 'x86_64')) {
+    foreach ($abi in @('arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64')) {
         $extracted = Join-Path $temporary "$abi.so"
         if (Test-Path -LiteralPath $extracted) { Remove-Item -LiteralPath $extracted }
     }
     Remove-Item -LiteralPath $temporary
 }
 $abis = @($libraries | ForEach-Object { $_.abi } | Sort-Object)
-if (($abis -join ',') -ne 'arm64-v8a,armeabi-v7a,x86_64') { throw "Wrong ABI list: $abis" }
+if (($abis -join ',') -ne ($expectedAbis -join ',')) { throw "Wrong ABI list for ${Variant}: $abis" }
 $hash = (Get-FileHash -LiteralPath $ApkPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $build = Get-Content -LiteralPath $BuildInfoPath -Raw | ConvertFrom-Json
 if ($build.sha256 -ne $hash -or $build.sourceDirty -or $build.version -ne $version -or $build.bytes -ne (Get-Item -LiteralPath $ApkPath).Length) { throw 'Build metadata differs from the verified artifact or source was dirty' }
+if ((@($build.abis | Sort-Object) -join ',') -ne ($expectedAbis -join ',')) { throw 'Build metadata ABI list differs from the APK variant' }
 if (-not $ExpectedCommit) {
     $ExpectedCommit = & git -C $repository rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine the expected source revision' }
     $ExpectedCommit = $ExpectedCommit.Trim()
 }
 if ($build.sourceCommit -ne $ExpectedCommit) { throw 'Build metadata does not match the expected source revision' }
-$report = @{ passed = $true; version = $version; versionCode = $versionCode; minSdk = 24; targetSdk = 36; debuggable = $false; signatureV2 = $true; signatureV3 = $true; zipAligned16KB = $true; sha256 = $hash; certificateSha256 = $certificate; libraries = $libraries; sourceCommit = $build.sourceCommit; bytes = $build.bytes }
+$report = @{ passed = $true; variant = $Variant; version = $version; versionCode = $versionCode; minSdk = 24; targetSdk = 36; debuggable = $false; signatureV2 = $true; signatureV3 = $true; zipAligned16KB = $true; sha256 = $hash; certificateSha256 = $certificate; libraries = $libraries; sourceCommit = $build.sourceCommit; bytes = $build.bytes }
 New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ReportPath))) -Force | Out-Null
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReportPath -Encoding utf8
 $report | ConvertTo-Json -Depth 8

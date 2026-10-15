@@ -1,7 +1,8 @@
 # Android release builds
 
 The release uses application ID `app.luminashelf.client`, Android API 24 or newer,
-and target API 36. A normal release contains arm64-v8a, armeabi-v7a and x86_64.
+and target API 36. The universal release contains arm64-v8a, armeabi-v7a, x86
+and x86_64. GitHub Actions also provides separate x86 and x86_64 APKs.
 
 ## Requirements
 
@@ -13,7 +14,7 @@ and target API 36. A normal release contains arm64-v8a, armeabi-v7a and x86_64.
 Install the Rust targets with:
 
 ```bash
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 npm ci
 ```
 
@@ -48,17 +49,21 @@ does not require an active network and DNS follows VPN/Private DNS/network chang
 
 ## Output and signing identity
 
-`artifacts/android/LuminaShelf-0.7.0-universal-release.apk` is the installable release.
+`artifacts/android/LuminaShelf-0.8.0-universal-release.apk` is the universal release.
+The independent packages use the `-x86-release.apk` and `-x86_64-release.apk`
+suffixes. All variants have the same version, application ID and signing identity.
 The same folder contains its `.sha256` checksum, `release-certificate.pem` and
 `universal-build-info.json`. Release builds use R8 and optimized, stripped Rust
 libraries; native ELF segments and APK native library entries are aligned for
 16 KB pages.
 
 After building, run `./scripts/verify-apk.ps1` in PowerShell with the same SDK/JDK
-environment. It verifies the manifest, non-debuggable flag, three ABIs, original
+environment. It verifies the manifest, non-debuggable flag, the exact expected ABI set, original
 certificate, v2/v3 signatures, 16 KB ZIP/ELF alignment and every JNI method declared
 in the generated Kotlin runtime. CI runs this check and uploads
-`apk-verification.json` alongside the APK.
+`universal-apk-verification.json` alongside the APK. For independent packages,
+use `./scripts/verify-apk.ps1 -Variant x86` or `-Variant x86_64`; reports and build
+metadata are named separately for each variant.
 
 The first release creates `.signing/luminashelf-release.p12` (a PKCS#12 keystore
 with a 3072-bit RSA key) and `.signing/release.json` (alias and generated password).
@@ -71,6 +76,13 @@ For an arm64-only release:
 
 ```bash
 npm run android:release -- aarch64
+```
+
+For the independent x86 and x86_64 signed releases:
+
+```bash
+npm run android:release -- i686
+npm run android:release -- x86_64
 ```
 
 For a debug APK:
@@ -88,7 +100,7 @@ node scripts/android-build.mjs --debug x86_64
 Install an APK with Android Platform Tools:
 
 ```bash
-adb install -r artifacts/android/LuminaShelf-0.7.0-universal-release.apk
+adb install -r artifacts/android/LuminaShelf-0.8.0-universal-release.apk
 ```
 
 The app-local default download folder on Android is under
@@ -101,11 +113,15 @@ Z-Library account tests require a user-owned account and a reachable EAPI origin
 ## GitHub Actions and signing Secrets
 
 The `Android CI` workflow checks TypeScript, Rust libraries, formatting, Clippy and
-the production frontend at four widths before building a signed universal APK.
+the production frontend at four widths before building three signed APK variants.
 It uses Windows with SDK 36 / NDK 27.2 / JDK 17 and two build workers. The subsequent
 Ubuntu job boots the actual signed APK in a headless Android 35 emulator and
-checks that the shelf actually appears, then collects the UI tree, screenshot,
-process ID and logcat. The emulator action invokes one standalone shell script
+checks the universal package's real HTTPS download, background service, pause,
+process recovery, Android long press, resume and EPUB reader. It then installs
+the independent x86_64 package over the same app and verifies startup. The x86
+package receives signature/ELF/JNI/alignment checks; it is not runtime-tested on
+the x86_64 emulator. The job collects UI trees, screenshots, process ID and logcat.
+The emulator action invokes one standalone shell script
 so APK path variables survive between commands. A launch check does not substitute for
 account, reader-file, sharing and document-provider acceptance on real devices.
 
@@ -124,5 +140,6 @@ release signing verifies the existing public certificate fingerprint.
 Run the workflow manually on the desired branch. Keep `publish_prerelease` false
 for an artifact-only build; turn it on and supply an explicit `v` tag only when
 publishing a prerelease. A pushed `v*` tag publishes a release. The uploaded artifact
-is named `LuminaShelf-signed-universal`; the Android launch evidence is
+names are `LuminaShelf-signed-universal`, `LuminaShelf-signed-x86` and
+`LuminaShelf-signed-x86_64`; the Android acceptance evidence is
 `Android-release-smoke`.

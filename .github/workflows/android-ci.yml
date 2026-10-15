@@ -86,7 +86,7 @@ jobs:
           packages: platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: true
@@ -109,23 +109,53 @@ jobs:
           LUMINASHELF_ANDROID_STORE_PASSWORD: ${{ secrets.LUMINASHELF_ANDROID_STORE_PASSWORD }}
           LUMINASHELF_ANDROID_KEY_ALIAS: ${{ secrets.LUMINASHELF_ANDROID_KEY_ALIAS }}
         run: node scripts/restore-signing.mjs
-      - name: Build and verify signed universal APK
+      - name: Build and verify signed universal, x86 and x86_64 APKs
         shell: pwsh
         run: |
           $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
           npm run android:release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/verify-apk.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run android:release -- i686
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/verify-apk.ps1 -Variant x86
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run android:release -- x86_64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/verify-apk.ps1 -Variant x86_64
       - name: Upload signed APK and public verification data
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-signed-universal
           path: |
-            artifacts/android/*-release.apk
-            artifacts/android/*.apk.sha256
+            artifacts/android/*-universal-release.apk
+            artifacts/android/*-universal-release.apk.sha256
             artifacts/android/release-certificate.pem
-            artifacts/android/*-build-info.json
-            artifacts/android/apk-verification.json
+            artifacts/android/universal-build-info.json
+            artifacts/android/universal-apk-verification.json
+          if-no-files-found: error
+      - name: Upload signed x86 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-x86
+          path: |
+            artifacts/android/*-x86-release.apk
+            artifacts/android/*-x86-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/x86-build-info.json
+            artifacts/android/x86-apk-verification.json
+          if-no-files-found: error
+      - name: Upload signed x86_64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-x86_64
+          path: |
+            artifacts/android/*-x86_64-release.apk
+            artifacts/android/*-x86_64-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/x86_64-build-info.json
+            artifacts/android/x86_64-apk-verification.json
           if-no-files-found: error
       - name: Publish an explicitly requested release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
@@ -168,6 +198,10 @@ jobs:
         with:
           name: LuminaShelf-signed-universal
           path: package
+      - uses: actions/download-artifact@v4
+        with:
+          name: LuminaShelf-signed-x86_64
+          path: package/x86_64
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

@@ -89,7 +89,7 @@ try:
     click_node(search)
     adb("shell", "input", "text", "Moby%sDick")
     click("搜索")
-    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    evidence("search-submitted")
     cover, _ = wait_node(lambda n: label(n).strip().startswith("查看 ") and "Moby" in label(n), 100, scroll=True)
     title = label(cover).strip().removeprefix("查看 ")
     click_node(cover)

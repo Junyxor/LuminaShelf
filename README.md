@@ -19,6 +19,10 @@ DoH 增加遵循 TTL 的有界缓存、并发查询合并，以及快速地址�
 应用 DNS 设置时清空解析缓存并重建连接池；完整自定义地址、引导 IP 与严格 TLS 校验保留。
 参考 Olib Mobile 的任务管理交互，未复制其代码或私有依赖，见 [参考核查](docs/olib-mobile-reference.md)。
 
+GitHub Actions 分别提供 x86（32位）、x86_64（64位）和通用 APK。
+通用版包含 arm64-v8a、armeabi-v7a、x86、x86_64；三份包使用相同应用标识与签名。
+普通 ARM 手机可使用通用版，Intel/AMD Android 设备可选对应的较小独立包。
+
 ## 0.7.0 — 收藏、书源与下载管理
 
 “收藏”只保存远程书籍条目，“下载”另外保存离线文件。找书页直接读取古登堡热门、
@@ -134,7 +138,7 @@ The `Desktop Package` GitHub Actions workflow can also be started manually. Push
 Builds default to two Cargo jobs and two Gradle workers. UI checks run headlessly;
 `scripts/check-native.mjs` exercises a hidden Windows WebView without opening file dialogs.
 
-Android CI currently produces an arm64 debug APK artifact for real-device testing and can optionally publish a prerelease from `workflow_dispatch`.
+Android CI produces signed x86, x86_64 and universal APK artifacts and can optionally publish a prerelease from `workflow_dispatch`.
 
 For a signed Android release, install JDK 17, Android SDK Platform 36, Build Tools 36.0.0,
 NDK 27.2.12479018 and the Rust Android targets, then run:
@@ -143,14 +147,14 @@ NDK 27.2.12479018 and the Rust Android targets, then run:
 npm run android:release
 ```
 
-The default release includes arm64-v8a, armeabi-v7a and x86_64. The signed APK,
+The default release includes arm64-v8a, armeabi-v7a, x86 and x86_64. The signed APK,
 SHA-256 checksum and public certificate are written to `artifacts/android/`.
 The first run generates a release keystore and credentials in `.signing/`; subsequent
 builds reuse that identity. Both directories are ignored by Git. See
 [Android release instructions](ANDROID_RELEASE.md) for environment setup and key backups.
 
-The `Android CI` workflow runs checks, signs the three-ABI release with repository
-Secrets, uploads the APK/checksum/public certificate, and can boot it in a headless
+The `Android CI` workflow runs checks, signs all three APK variants with repository
+Secrets, uploads each APK/checksum/public certificate separately, and can boot the universal and x86_64 packages in a headless
 Android emulator. Manual builds default to no GitHub Release publication. Publishing
 requires the workflow's explicit release input or a pushed `v*` tag.
 

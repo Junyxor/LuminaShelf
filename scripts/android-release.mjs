@@ -23,7 +23,7 @@ for (const file of [java, keytool, apksigner, zipalign]) {
 }
 
 const targets = process.argv.slice(2);
-if (targets.length === 0) targets.push("aarch64", "armv7", "x86_64");
+if (targets.length === 0) targets.push("aarch64", "armv7", "i686", "x86_64");
 const abis = { aarch64: "arm64-v8a", armv7: "armeabi-v7a", x86_64: "x86_64", i686: "x86" };
 if (new Set(targets).size !== targets.length || targets.some((target) => !abis[target])) {
   throw new Error("Targets must be unique values from: aarch64 armv7 x86_64 i686");

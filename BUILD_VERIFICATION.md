@@ -3,7 +3,9 @@
 ## 0.8.0 acceptance work — 2026-10-15
 
 Target: same application ID/certificate as 0.7, version code 8000, min SDK24,
-target SDK36, universal arm64-v8a/armeabi-v7a/x86_64 release APK.
+target SDK36. Builds provide x86, x86_64 and universal APKs; universal includes
+arm64-v8a/armeabi-v7a/x86/x86_64. Each artifact verifies its exact ABI set, ELF
+machine/class, JNI exports,16KB alignment, signature and matching source metadata.
 
 Download regressions use real local HTTP sockets: body disconnect and offset
 retry, actual simultaneous ranges without a HEAD declaration, range ignored

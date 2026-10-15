@@ -39,6 +39,21 @@ for attempt in {1..20}; do
 done
 test "$ui_ready" = true
 python3 scripts/android-download-smoke.py
+single_apk="$(find package/x86_64 -name '*-x86_64-release.apk' -type f -print -quit)"
+test -n "$single_apk"
+adb install -r "$single_apk"
+adb shell am start -W -n app.luminashelf.client/.MainActivity
+x64_ready=false
+for attempt in {1..15}; do
+  if timeout 10s adb shell uiautomator dump /sdcard/luminashelf-x64.xml &&
+    adb pull /sdcard/luminashelf-x64.xml smoke/x86_64-ui.xml &&
+    grep -q '我的书架' smoke/x86_64-ui.xml; then
+    x64_ready=true
+    break
+  fi
+  sleep 1
+done
+test "$x64_ready" = true
 adb shell pidof app.luminashelf.client > smoke/pid.txt
 adb logcat -d > smoke/logcat.txt
 if grep -q 'Process: app.luminashelf.client.*PID:' smoke/logcat.txt; then
