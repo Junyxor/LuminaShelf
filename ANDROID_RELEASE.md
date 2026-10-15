@@ -104,7 +104,9 @@ The `Android CI` workflow checks TypeScript, Rust libraries, formatting, Clippy 
 the production frontend at four widths before building a signed universal APK.
 It uses Windows with SDK 36 / NDK 27.2 / JDK 17 and two build workers. The subsequent
 Ubuntu job boots the actual signed APK in a headless Android 35 emulator and
-collects the UI tree, screenshot and logcat. A launch check does not substitute for
+checks that the shelf actually appears, then collects the UI tree, screenshot,
+process ID and logcat. The emulator action invokes one standalone shell script
+so APK path variables survive between commands. A launch check does not substitute for
 account, reader-file, sharing and document-provider acceptance on real devices.
 
 The following repository Actions Secrets hold the existing release identity:

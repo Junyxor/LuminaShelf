@@ -163,6 +163,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: LuminaShelf-signed-universal
@@ -179,20 +180,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -cores 2 -memory 2048
-          script: |
-            mkdir -p smoke
-            APK=$(find package -name '*-universal-release.apk' -type f -print -quit)
-            test -n "$APK"
-            adb install -r "$APK"
-            adb shell am start -W -n app.luminashelf.client/.MainActivity
-            sleep 15
-            adb shell pidof app.luminashelf.client
-            adb shell uiautomator dump /sdcard/luminashelf-ui.xml
-            adb pull /sdcard/luminashelf-ui.xml smoke/ui.xml
-            adb shell screencap -p /sdcard/luminashelf.png
-            adb pull /sdcard/luminashelf.png smoke/screenshot.png
-            adb logcat -d > smoke/logcat.txt
-            if grep -q 'Process: app.luminashelf.client.*PID:' smoke/logcat.txt; then exit 1; fi
+          script: bash scripts/android-smoke.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
