@@ -153,6 +153,12 @@ impl AppResolver {
             };
             *self.selected.write().await = next;
         }
+        match &**self.selected.read().await {
+            DnsBackend::Doh(resolver) => resolver.clear_cache().await,
+            DnsBackend::Hickory(resolver) => resolver.clear_cache(),
+            #[cfg(any(target_os = "android", test))]
+            DnsBackend::Native => {}
+        }
         *self.proxy.write().map_err(|_| anyhow!("代理配置锁异常"))? = policy.proxy_url.clone();
         *self.policy.write().await = policy;
         self.revision.fetch_add(1, Ordering::Release);

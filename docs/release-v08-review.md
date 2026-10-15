@@ -1,0 +1,35 @@
+# 0.8 review against 677086d
+
+Scope: the user's download interruption, continue/retry, task long press,
+multiconnection and DoH complaints, plus signed GitHub Actions delivery.
+The two code-review axes reviewed the working implementation independently.
+
+## Standards
+
+No documented boundary violations found. Three correctness findings:
+
+- P1: response headers could stall indefinitely before the body idle timeout.
+  Fixed with a separate25-second response deadline, including each redirect hop;
+  the stalled-header regression uses a real accepting-but-silent HTTP server.
+- P1: a fast DNS address family could exclude slower usable addresses for the
+  cache TTL. Fixed by keeping the other query alive and merging its positive-TTL
+  addresses, with an epoch preventing an old request repopulating cleared caches.
+  Both delayed A and delayed AAAA are covered by TLS/wire regressions.
+- P2: overlapping cancel/resume could mark an active worker cancelled. Pause and
+  cancel now hold the same task operation guard as remove/restart until workers
+  finish checkpointing; resume/enqueue reject changes while that guard is held.
+
+## Spec
+
+Three correctness findings, no unrelated expansion identified:
+
+- P1: the response-header stall violated recoverable download behavior. Fixed
+  as above, without imposing a whole-file deadline on slow large downloads.
+- P2: a completed file whose shelf entry was removed could not be read/managed
+  after enqueue returned a stale library ID. The manager validates and reattaches
+  the saved file; a regression proves this needs no new network acquisition.
+- P2: a fast-family DoH cache could drop the only usable slower family. Fixed
+  with background completion and bounded TTL-aware cache merging as above.
+
+Three findings on each axis were addressed. The highest severity on each axis
+was P1 (unbounded response-header wait and DNS address-family availability).

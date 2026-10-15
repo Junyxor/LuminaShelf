@@ -59,7 +59,7 @@ jobs:
         if: always()
         with:
           name: ui-verification
-          path: artifacts/testing/v07/
+          path: artifacts/testing/v08/
           if-no-files-found: ignore
 
   package:

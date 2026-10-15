@@ -29,3 +29,6 @@ tauri-plugin-opener = "2"
 semver = "1"
 scraper = "0.24"
 same-file = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

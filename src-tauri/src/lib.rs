@@ -1,4 +1,5 @@
 mod announcement_commands;
+mod download_commands;
 mod imports;
 mod library_commands;
 mod network_commands;
@@ -8,7 +9,7 @@ mod source_commands;
 
 use lumina_core::network::NetworkClient;
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
+    download::DownloadManager,
     library::{now_unix_ms, scan_folder},
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
     ProviderRegistry, ReadingProgress, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
@@ -47,6 +48,7 @@ struct AppState {
     zlibrary_config: RwLock<ZLibraryConfig>,
     zlibrary_config_path: PathBuf,
     book_dir: PathBuf,
+    downloads: DownloadManager,
 }
 
 impl AppState {
@@ -94,7 +96,11 @@ impl AppState {
         )
         .map_err(|error| error.to_string())?;
 
+        let downloads =
+            DownloadManager::new(state_store.clone(), providers.clone(), resolver.clone())
+                .map_err(|error| error.to_string())?;
         Ok(Self {
+            downloads,
             book_dir: config_dir.join("books"),
             resolver,
             providers,
@@ -417,87 +423,16 @@ async fn download_book(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<DownloadReceipt, String> {
-    let url = state
-        .providers
-        .acquisition_url(&provider_id, &book_id, format)
-        .await
-        .map_err(|error| error.to_string())?;
-    let headers = state
-        .providers
-        .download_headers_for(&provider_id, &url)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let system_download_dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    let destination_dir = download_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = resumable_destination(
-        &destination_dir,
-        &title,
-        format.extension(),
-        &provider_id,
-        &book_id,
-    );
-    if destination.is_file() && lumina_core::library::validate_readable_file(&destination).is_err()
-    {
-        let preserved = destination.with_file_name(format!(".invalid-{}", uuid::Uuid::new_v4()));
-        fs::rename(&destination, preserved)
-            .map_err(|error| format!("无法保留旧错误文件以重新下载：{error}"))?;
-    }
-    let downloader =
-        SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
-            .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
-
-    let progress_app = app.clone();
-    let progress_provider = provider_id.clone();
-    let progress_book = book_id.clone();
-    let monitor = tauri::async_runtime::spawn(async move {
-        while rx.changed().await.is_ok() {
-            let progress = *rx.borrow_and_update();
-            let _ = progress_app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    provider_id: progress_provider.clone(),
-                    book_id: progress_book.clone(),
-                    downloaded_bytes: progress.downloaded_bytes,
-                    total_bytes: progress.total_bytes,
-                },
-            );
-        }
-    });
-
-    let result = downloader
-        .download_to_with_context(
-            url,
-            destination.clone(),
-            headers,
-            Some(format!("{provider_id}:{book_id}")),
-            tx,
-        )
-        .await;
-    let _ = monitor.await;
-    result.map_err(|error| format!("{error:#}"))?;
-    lumina_core::library::validate_readable_file(&destination)
-        .map_err(|error| format!("下载文件校验失败，未加入已下载书架：{error:#}"))?;
-
-    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
-        .map_err(|error| error.to_string())?;
-    state
-        .state_store
-        .upsert_library_item(&item)
-        .map_err(|error| error.to_string())?;
-    Ok(DownloadReceipt {
-        path: destination,
-        item,
-    })
+    download_commands::legacy_receipt(
+        app,
+        state,
+        provider_id,
+        book_id,
+        title,
+        format,
+        download_dir,
+    )
+    .await
 }
 
 async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
@@ -627,6 +562,7 @@ fn save_zlibrary_config(path: &Path, config: &ZLibraryConfig) -> Result<(), Stri
     fs::write(path, bytes).map_err(|error| format!("write Z-Library config: {error}"))
 }
 
+#[cfg(test)]
 fn resumable_destination(
     directory: &Path,
     title: &str,
@@ -634,11 +570,7 @@ fn resumable_destination(
     provider_id: &str,
     book_id: &str,
 ) -> PathBuf {
-    let title = sanitize_filename(title);
-    let title = title.chars().take(80).collect::<String>();
-    let identity = sanitize_filename(&format!("{provider_id}-{book_id}"));
-    let identity = identity.chars().take(36).collect::<String>();
-    directory.join(format!("{title} [{identity}].{extension}"))
+    lumina_core::download::destination_for(directory, title, extension, provider_id, book_id)
 }
 
 fn sanitize_filename(value: &str) -> String {
@@ -687,6 +619,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(download_commands::plugin())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -697,11 +630,22 @@ pub fn run() {
                 .map(PathBuf::from)
                 .unwrap_or(config_dir);
             let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
+            download_commands::observe(app.handle().clone(), state.downloads.clone());
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             core_status,
+            download_commands::download_tasks,
+            download_commands::enqueue_download_book,
+            download_commands::pause_download,
+            download_commands::resume_download,
+            download_commands::cancel_download,
+            download_commands::restart_download,
+            download_commands::remove_download,
+            download_commands::pause_all_downloads,
+            download_commands::download_settings,
+            download_commands::save_download_settings,
             announcement_commands::announcement_feeds,
             announcement_commands::check_app_update,
             announcement_commands::open_announcement_link,

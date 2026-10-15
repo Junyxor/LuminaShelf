@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import * as Dialog from "@radix-ui/react-dialog";
-import { BookOpen, Library, Search, Download, Settings, UserRound, Plus, ArrowLeft, ChevronRight, X, RefreshCw, Check, Heart, MoreHorizontal, FileText, Wifi, Globe, Megaphone } from "lucide-react";
+import { BookOpen, Library, Search, Download, Settings, UserRound, Plus, ArrowLeft, ChevronRight, X, RefreshCw, Check, Heart, MoreHorizontal, Wifi, Globe, Megaphone } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import NetworkSettings from "./DnsSettings";
 import PdfReader from "./PdfReader";
@@ -13,12 +12,13 @@ import BookSourceHome from "./BookSourceHome";
 import BookDetailsDialog from "./BookDetailsDialog";
 import DownloadedBookActions from "./DownloadedBookActions";
 import AnnouncementsPage from "./AnnouncementsPage";
+import DownloadQueue, { activeDownload, useDownloadQueue } from "./DownloadQueue";
+import "./download-queue.css";
 import { openExternalFile } from "./external-files";
 import type { BookSummary, BookFormat, LibraryItem, ReadingProgress, ReaderBookMetadata, FavoriteBook } from "./types";
 
 type Page = "library" | "search" | "downloads" | "settings" | "account" | "network" | "mirrors" | "announcements";
 type Provider = { id: string; name: string; capabilities: { authenticated: boolean; searchable: boolean; downloadable: boolean } };
-type DownloadTask = { key: string; providerId: string; bookId: string; title: string; format: BookFormat; state: "queued" | "downloading" | "completed" | "failed"; downloadedBytes: number; totalBytes?: number | null; error?: string };
 type SettingsData = { defaultProvider: string; searchPageSize: number };
 type SearchResult = { items: BookSummary[]; page: number; hasNext: boolean };
 const navigation = [
@@ -32,12 +32,6 @@ const defaults: SettingsData = { defaultProvider: "", searchPageSize: 24 };
 function loadSettings(): SettingsData {
   try { return { ...defaults, ...JSON.parse(localStorage.getItem("luminashelf.settings") || "{}") }; } catch { return defaults; }
 }
-function formatBytes(value?: number | null) {
-  if (!value) return "0 B";
-  const units = ["B", "KB", "MB", "GB"]; let size = value; let unit = 0;
-  while (size >= 1024 && unit < 3) { size /= 1024; unit++; }
-  return `${size.toFixed(unit && size < 10 ? 1 : 0)} ${units[unit]}`;
-}
 function readableFormat(book: BookSummary): BookFormat | null {
   return (["epub", "pdf", "txt"] as BookFormat[]).find((format) => book.format === format || book.availableFormats.includes(format)) || null;
 }
@@ -48,7 +42,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("library");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [account, setAccount] = useState<ZLibraryAccountStatus | null>(null);
-  const [version, setVersion] = useState("0.7.0");
+  const [version, setVersion] = useState("0.8.0");
   const [settings, setSettings] = useState<SettingsData>(loadSettings);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
@@ -64,7 +58,7 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
-  const [downloads, setDownloads] = useState<Record<string, DownloadTask>>({});
+  const downloadQueue = useDownloadQueue((task) => { void refreshLibrary(); setNotice({ text: `“${task.title}”下载完成，已加入书架`, error: false }); });
   const [reader, setReader] = useState<{ item: LibraryItem; book: ReaderBookMetadata; chapter: number; offset: number } | null>(null);
   const [readerLoading, setReaderLoading] = useState<string | null>(null);
   const [pdf, setPdf] = useState<LibraryItem | null>(null);
@@ -94,20 +88,13 @@ export default function App() {
     return () => { active = false; };
   }, []);
   useEffect(() => {
-    let disposed = false; let stop: (() => void) | undefined;
-    void listen<{ providerId: string; bookId: string; downloadedBytes: number; totalBytes?: number }>("download-progress", ({ payload }) => {
-      const key = `${payload.providerId}:${payload.bookId}`;
-      setDownloads((current) => current[key] && current[key].state !== "completed" ? { ...current, [key]: { ...current[key], ...payload, state: "downloading" } } : current);
-    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
-    return () => { disposed = true; stop?.(); };
-  }, []);
-  useEffect(() => {
     const back = () => {
       if (removing) { setRemoving(null); return true; }
       if (managed) { setManaged(null); return true; }
       if (selectedBook) { setSelectedBook(null); return true; }
       if (reader) { setReader(null); return true; }
       if (pdf) { setPdf(null); return true; }
+      if (page === "downloads" && (window as Window & { luminaDownloadBack?: () => boolean }).luminaDownloadBack?.()) return true;
       if (page !== "library") { setPage(["account", "network", "mirrors", "announcements"].includes(page) ? "settings" : "library"); return true; }
       return false;
     };
@@ -118,7 +105,7 @@ export default function App() {
   const visibleLibrary = useMemo(() => library.filter((item) => `${item.title} ${item.authors.join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [library, filter]);
   const visibleFavorites = useMemo(() => favorites.filter((item) => `${item.title} ${item.authors.join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [favorites, filter]);
   const favoriteKeys = useMemo(() => new Set(favorites.map((item) => `${item.providerId}:${item.bookId}`)), [favorites]);
-  const pending = Object.values(downloads).filter((task) => task.state === "queued" || task.state === "downloading").length;
+  const pending = downloadQueue.tasks.filter(activeDownload).length;
   function switchProvider(value: string) { searchId.current++; setProvider(value); setResults(null); setSelectedBook(null); setSearching(false); }
   async function refreshLibrary() {
     setLibraryLoading(true);
@@ -148,16 +135,11 @@ export default function App() {
   async function downloadBook(book: BookSummary, format = readableFormat(book), bookProvider = provider) {
     if (!format) { showDetails(book, bookProvider); return; }
     if (bookProvider === "zlibrary" && !account?.signedIn) { setPage("account"); return; }
-    const key = `${bookProvider}:${book.id}`;
     bookCache.current[book.title] = book.coverUrl || "";
-    setDownloads((current) => ({ ...current, [key]: { key, providerId: bookProvider, bookId: book.id, title: book.title, format, state: "queued", downloadedBytes: 0 } }));
-    setSelectedBook(null); setNotice({ text: `“${book.title}”正在下载，完成后会加入书架`, error: false });
     try {
-      const receipt = await invoke<{ item: LibraryItem }>("download_book", { providerId: bookProvider, bookId: book.id, title: book.title, format, downloadDir: null });
-      setDownloads((current) => ({ ...current, [key]: { ...current[key], state: "completed", downloadedBytes: receipt.item.sizeBytes, totalBytes: receipt.item.sizeBytes } }));
-      setLibrary((current) => [receipt.item, ...current.filter((item) => item.id !== receipt.item.id)]);
-      setNotice({ text: `“${book.title}”已加入书架`, error: false });
-    } catch (reason) { setDownloads((current) => ({ ...current, [key]: { ...current[key], state: "failed", error: messageOf(reason) } })); setNotice({ text: `下载失败：${messageOf(reason)}`, error: true }); }
+      await downloadQueue.enqueue(bookProvider, book.id, book.title, format);
+      setSelectedBook(null); setPage("downloads"); setNotice(null);
+    } catch (reason) { setNotice({ text: "添加下载失败：" + messageOf(reason), error: true }); }
   }
   async function openBook(item: LibraryItem) {
     setReaderLoading(item.id); setNotice(null);
@@ -214,11 +196,11 @@ export default function App() {
         <div className="source-picker" role="group" aria-label="选择书源">{providers.filter((item) => item.capabilities.searchable).map((item) => <button key={item.id} className={provider === item.id ? "selected" : ""} onClick={() => switchProvider(item.id)}>{item.id === "gutendex" ? "古登堡公版书" : "Z-Library"}{provider === item.id ? <Check size={16} /> : null}</button>)}</div>
         {needsLogin ? <div className="source-login"><p>可以浏览热门书籍并收藏；搜索和下载需要书源账户。</p><button className="text-button" onClick={() => setPage("account")}>登录账户<ChevronRight size={18} /></button></div> : null}
         {searching ? <div className="loading-state" role="status">正在找书…</div> : results ? <><div className="results-heading"><span>{results.items.length ? `第 ${results.page} 页 · ${results.items.length} 本书` : "没有匹配的书籍"}</span><div><button className="secondary-button" disabled={results.page <= 1 || searching} onClick={() => void search(results.page - 1)}>上一页</button><button className="secondary-button" disabled={!results.hasNext || searching} onClick={() => void search(results.page + 1)}>下一页</button></div></div><div className="shelf-grid search-results">{results.items.map((book) => {
-          const task = downloads[`${provider}:${book.id}`];
+          const task = downloadQueue.tasks.find((task) => task.providerId === provider && task.bookId === book.id && activeDownload(task));
           return <article className="shelf-book" key={book.id}><button className="cover-button" onClick={() => showDetails(book)} aria-label={`查看 ${book.title}`}><BookCover title={book.title} authors={book.authors} url={book.coverUrl} format={readableFormat(book) || ""} /></button><h3>{book.title}</h3><p>{book.authors.join(" · ") || "作者未提供"}</p><div className="shelf-actions"><button className="text-button" aria-label={`${favoriteKeys.has(`${provider}:${book.id}`) ? "取消收藏" : "收藏"} ${book.title}`} onClick={() => void toggleFavorite(book)}><Heart size={18} fill={favoriteKeys.has(`${provider}:${book.id}`) ? "currentColor" : "none"} />{favoriteKeys.has(`${provider}:${book.id}`) ? "已收藏" : "收藏"}</button><button className="icon-button" aria-label={`下载 ${book.title}`} disabled={task?.state === "downloading" || task?.state === "queued"} onClick={() => showDetails(book)}><Download size={19} /></button></div></article>;
         })}</div></> : provider ? <BookSourceHome key={`${provider}:${account?.signedIn}:${account?.origin}`} providerId={provider} favorites={favoriteKeys} onSelect={showDetails} onFavorite={(book) => void toggleFavorite(book)} /> : null}
       </> : null}
-      {page === "downloads" ? <section className="download-list">{Object.values(downloads).length ? Object.values(downloads).map((task) => { const percentage = task.totalBytes ? Math.min(100, Math.round(task.downloadedBytes / task.totalBytes * 100)) : task.state === "completed" ? 100 : 0; return <article className="download-item" key={task.key}><FileText size={26} strokeWidth={1.6} /><div className="download-copy"><h3>{task.title}</h3><p>{task.format.toUpperCase()} · {formatBytes(task.downloadedBytes)}{task.totalBytes ? ` / ${formatBytes(task.totalBytes)}` : ""}</p><div className="progress-track" role="progressbar" aria-label={task.title} aria-valuenow={percentage} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${percentage}%` }} /></div>{task.error ? <p className="error-text">{task.error}</p> : null}</div><span className={`download-state ${task.state}`}>{task.state === "completed" ? "已完成" : task.state === "failed" ? "下载失败" : task.state === "queued" ? "准备中" : `${percentage}%`}</span></article>; }) : <div className="empty-state"><Download size={32} strokeWidth={1.5} /><h2>还没有下载任务</h2><p>找到想读的书，加入书架后可在这里查看进度。</p><button className="primary-button" onClick={() => setPage("search")}>去找书</button></div>}</section> : null}
+      {page === "downloads" ? <DownloadQueue queue={downloadQueue} onRead={(item) => void openBook(item)} onManageFile={setManaged} onFind={() => setPage("search")} /> : null}
       {page === "settings" ? <div className="settings-content">
         <section className="settings-section"><h2>账户与书源</h2><button className="settings-row" onClick={() => setPage("account")}><UserRound size={23} /><span><strong>Z-Library 账户</strong><small>{account?.signedIn ? "已登录，点击管理账户" : "登录以搜索和下载书籍"}</small></span><ChevronRight size={20} /></button><label className="settings-field"><span>默认书源</span><select value={settings.defaultProvider} onChange={(event) => setSettings({ ...settings, defaultProvider: event.target.value })}><option value="">自动选择</option>{providers.map((item) => <option value={item.id} key={item.id}>{item.id === "gutendex" ? "古登堡公版书" : "Z-Library"}</option>)}</select></label><label className="settings-field"><span>每页搜索结果</span><select value={settings.searchPageSize} onChange={(event) => setSettings({ ...settings, searchPageSize: Number(event.target.value) })}>{[12, 24, 36, 50].map((count) => <option key={count} value={count}>{count} 本</option>)}</select></label></section>
         <section className="settings-section"><h2>连接与内容</h2><button className="settings-row" onClick={() => setPage("network")}><Wifi size={23} /><span><strong>DNS 服务器与网络</strong><small>添加、编辑、测试自己的 DNS / DoH 配置</small></span><ChevronRight size={20} /></button><button className="settings-row" onClick={() => setPage("mirrors")}><Globe size={23} /><span><strong>书源镜像与发布源</strong><small>内置候选、拉取检测、手动选择</small></span><ChevronRight size={20} /></button><button className="settings-row" onClick={() => setPage("announcements")}><Megaphone size={23} /><span><strong>公告与检查更新</strong><small>星书公告、书源官网公告、版本信息</small></span><ChevronRight size={20} /></button></section>

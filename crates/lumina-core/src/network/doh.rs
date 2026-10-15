@@ -5,18 +5,33 @@ use hickory_resolver::proto::{
 };
 use reqwest::{header, Client};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
-    time::Duration,
+    sync::{Arc, Weak},
+    time::{Duration, Instant},
 };
+use tokio::sync::Mutex;
 use url::Url;
 
 use super::ResolverPolicy;
 
+#[derive(Clone)]
 pub(super) struct DohResolver {
     client: Client,
     endpoint: Url,
     query_timeout: Duration,
+    cache: Arc<Mutex<DohCache>>,
+}
+
+#[derive(Default)]
+struct DohCache {
+    entries: HashMap<String, (Instant, Vec<IpAddr>)>,
+    flights: HashMap<String, Weak<Mutex<()>>>,
+    epoch: u64,
+}
+struct Answer {
+    ips: Vec<IpAddr>,
+    ttl: u32,
 }
 
 pub(super) fn endpoint(policy: &ResolverPolicy) -> Result<Url> {
@@ -81,19 +96,74 @@ impl DohResolver {
             client: builder.build()?,
             endpoint,
             query_timeout: Duration::from_millis(policy.timeout_ms),
+            cache: Arc::new(Mutex::new(DohCache::default())),
         })
     }
 
     pub(super) async fn lookup(&self, host: &str) -> Result<Vec<IpAddr>> {
-        let (v4, v6) = tokio::join!(
-            self.timed_query(host, RecordType::A),
-            self.timed_query(host, RecordType::AAAA)
-        );
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let gate = {
+            let mut cache = self.cache.lock().await;
+            cache
+                .entries
+                .retain(|_, (expires, _)| *expires > Instant::now());
+            if let Some((_, ips)) = cache.entries.get(&host) {
+                return Ok(ips.clone());
+            }
+            cache.flights.retain(|_, gate| gate.strong_count() > 0);
+            if let Some(gate) = cache.flights.get(&host).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(()));
+                cache.flights.insert(host.clone(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+        let _flight = gate.lock().await;
+        if let Some((expires, ips)) = self.cache.lock().await.entries.get(&host) {
+            if *expires > Instant::now() {
+                return Ok(ips.clone());
+            }
+        }
+        let epoch = self.cache.lock().await.epoch;
+        let query = |kind| {
+            let resolver = self.clone();
+            let host = host.clone();
+            tokio::spawn(async move { resolver.timed_query(&host, kind).await })
+        };
+        let mut a = query(RecordType::A);
+        let mut aaaa = query(RecordType::AAAA);
+        // Give the other family a short grace period once we already have usable
+        // addresses. An unresponsive IPv6 resolver must not stall every HTTP request.
+        let (first, mut pending) = tokio::select! {
+            first = &mut a => {
+                (first.context("DoH 查询任务中断")?, aaaa)
+            },
+            first = &mut aaaa => {
+                (first.context("DoH 查询任务中断")?, a)
+            }
+        };
+        let second = if first.as_ref().is_ok_and(|answer| !answer.ips.is_empty()) {
+            tokio::time::timeout(Duration::from_millis(150), &mut pending)
+                .await
+                .ok()
+        } else {
+            Some((&mut pending).await)
+        };
+        let incomplete = second.is_none();
+        let second =
+            second.map(|result| result.context("DoH 查询任务中断").and_then(|answer| answer));
         let mut addresses = Vec::new();
         let mut errors = Vec::new();
-        for result in [v4, v6] {
+        let mut ttl = 3600;
+        for result in std::iter::once(first).chain(second) {
             match result {
-                Ok(mut ips) => addresses.append(&mut ips),
+                Ok(mut answer) => {
+                    if !answer.ips.is_empty() {
+                        ttl = ttl.min(answer.ttl);
+                        addresses.append(&mut answer.ips);
+                    }
+                }
                 Err(error) => errors.push(format!("{error:#}")),
             }
         }
@@ -103,19 +173,75 @@ impl DohResolver {
         ensure!(!addresses.is_empty(), "DoH 解析失败：{}", errors.join("；"));
         addresses.sort_unstable();
         addresses.dedup();
+        self.cache_answer(
+            &host,
+            Answer {
+                ips: addresses.clone(),
+                ttl,
+            },
+            epoch,
+        )
+        .await;
+        if incomplete {
+            let resolver = self.clone();
+            tokio::spawn(async move {
+                // Keep the slower query alive and merge its addresses. The first
+                // usable family is fast without excluding another mobile route for a full TTL.
+                if let Ok(Ok(answer)) = pending.await {
+                    resolver.cache_answer(&host, answer, epoch).await;
+                }
+            });
+        }
         Ok(addresses)
     }
 
-    async fn timed_query(&self, host: &str, kind: RecordType) -> Result<Vec<IpAddr>> {
+    pub(super) async fn clear_cache(&self) {
+        let mut cache = self.cache.lock().await;
+        cache.entries.clear();
+        cache.epoch += 1;
+    }
+
+    async fn cache_answer(&self, host: &str, mut answer: Answer, epoch: u64) {
+        if answer.ttl == 0 || answer.ips.is_empty() {
+            return;
+        }
+        let mut cache = self.cache.lock().await;
+        if cache.epoch != epoch {
+            return;
+        }
+        let mut expires = Instant::now() + Duration::from_secs(answer.ttl.into());
+        if let Some((old_expires, ips)) = cache.entries.get(host) {
+            if *old_expires > Instant::now() {
+                expires = expires.min(*old_expires);
+                answer.ips.extend(ips);
+            }
+        }
+        answer.ips.sort_unstable();
+        answer.ips.dedup();
+        if cache.entries.len() >= 256 {
+            if let Some(oldest) = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, (expires, _))| *expires)
+                .map(|(host, _)| host.clone())
+            {
+                cache.entries.remove(&oldest);
+            }
+        }
+        cache.entries.insert(host.to_owned(), (expires, answer.ips));
+    }
+
+    async fn timed_query(&self, host: &str, kind: RecordType) -> Result<Answer> {
         tokio::time::timeout(self.query_timeout, self.query(host, kind))
             .await
             .context("DoH 查询超时")?
     }
 
-    async fn query(&self, host: &str, kind: RecordType) -> Result<Vec<IpAddr>> {
+    async fn query(&self, host: &str, kind: RecordType) -> Result<Answer> {
         let mut name = Name::from_ascii(format!("{}.", host.trim_end_matches('.')))
             .context("域名格式不正确")?;
         let mut seen = HashSet::new();
+        let mut ttl = 3600;
         for _ in 0..8 {
             ensure!(seen.insert(name.clone()), "DoH 返回了循环别名");
             let mut request = Message::new(0, MessageType::Query, OpCode::Query);
@@ -134,6 +260,19 @@ impl DohResolver {
                 .error_for_status()
                 .map_err(reqwest::Error::without_url)
                 .context("DoH 服务返回 HTTP 错误")?;
+            let age = response
+                .headers()
+                .get(header::AGE)
+                .and_then(|v| v.to_str().ok()?.parse::<u32>().ok())
+                .unwrap_or(0);
+            let no_store = response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| {
+                    v.split(',')
+                        .any(|part| part.trim().eq_ignore_ascii_case("no-store"))
+                });
             let mut bytes = Vec::new();
             while let Some(chunk) = response
                 .chunk()
@@ -194,8 +333,21 @@ impl DohResolver {
                     _ => None,
                 })
                 .collect();
+            for record in reply
+                .answers
+                .iter()
+                .filter(|record| owners.contains(&record.name))
+            {
+                if record.record_type() == kind || matches!(record.data, RData::CNAME(_)) {
+                    ttl = ttl.min(if no_store {
+                        0
+                    } else {
+                        record.ttl.saturating_sub(age)
+                    });
+                }
+            }
             if !ips.is_empty() {
-                return Ok(ips);
+                return Ok(Answer { ips, ttl });
             }
             match reply.answers.iter().find_map(|record| {
                 if record.name == name {
@@ -206,7 +358,12 @@ impl DohResolver {
                 None
             }) {
                 Some(alias) => name = alias,
-                None => return Ok(Vec::new()),
+                None => {
+                    return Ok(Answer {
+                        ips: Vec::new(),
+                        ttl: 0,
+                    })
+                }
             }
         }
         Err(anyhow!("DoH 别名链超过 8 次"))
@@ -235,6 +392,23 @@ mod tests {
         code: ResponseCode,
         stall_aaaa: bool,
     ) -> (Url, reqwest::Certificate, tokio::task::JoinHandle<()>) {
+        service_with_ttl(code, stall_aaaa, 60, 2).await
+    }
+    async fn service_with_ttl(
+        code: ResponseCode,
+        stall_aaaa: bool,
+        ttl: u32,
+        requests: usize,
+    ) -> (Url, reqwest::Certificate, tokio::task::JoinHandle<()>) {
+        service_delayed(code, stall_aaaa, ttl, requests, None).await
+    }
+    async fn service_delayed(
+        code: ResponseCode,
+        stall_aaaa: bool,
+        ttl: u32,
+        requests: usize,
+        delayed: Option<RecordType>,
+    ) -> (Url, reqwest::Certificate, tokio::task::JoinHandle<()>) {
         let certificate =
             rcgen::generate_simple_self_signed(vec!["dns.fixture.test".into()]).unwrap();
         let trust = reqwest::Certificate::from_pem(certificate.cert.pem().as_bytes()).unwrap();
@@ -259,7 +433,8 @@ mod tests {
         .unwrap();
         let task = tokio::spawn(async move {
             let mut stalled = Vec::new();
-            for _ in 0..2 {
+            let mut replies = Vec::new();
+            for _ in 0..requests {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let Ok(mut stream) = acceptor.accept(tcp).await else {
                     continue;
@@ -305,14 +480,30 @@ mod tests {
                 if code == ResponseCode::NoError && request.queries[0].query_type == RecordType::A {
                     response.answers.push(Record::from_rdata(
                         request.queries[0].name.clone(),
-                        60,
+                        ttl,
                         RData::A(A("203.0.113.20".parse().unwrap())),
                     ));
                 }
+                if delayed.is_some() && request.queries[0].query_type == RecordType::AAAA {
+                    response.answers.push(Record::from_rdata(
+                        request.queries[0].name.clone(),
+                        ttl,
+                        RData::AAAA(hickory_resolver::proto::rr::rdata::AAAA(
+                            "2001:db8::20".parse().unwrap(),
+                        )),
+                    ));
+                }
                 let payload = response.to_vec().unwrap();
+                let is_delayed = delayed == Some(request.queries[0].query_type);
+                replies.push(tokio::spawn(async move {
+                if is_delayed { tokio::time::sleep(Duration::from_millis(400)).await; }
                 stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).as_bytes()).await.unwrap();
                 stream.write_all(&payload).await.unwrap();
                 let _ = stream.shutdown().await;
+                }));
+            }
+            for reply in replies {
+                reply.await.unwrap();
             }
             if !stalled.is_empty() {
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -332,6 +523,7 @@ mod tests {
             client,
             endpoint: url,
             query_timeout: Duration::from_secs(3),
+            cache: Arc::new(Mutex::new(DohCache::default())),
         }
     }
 
@@ -377,9 +569,9 @@ mod tests {
     async fn unanswered_aaaa_does_not_discard_successful_a_response() {
         let (url, trust, server) = service(ResponseCode::NoError, true).await;
         let mut client = fixture_client(url, trust);
-        client.query_timeout = Duration::from_millis(250);
+        client.query_timeout = Duration::from_secs(3);
         let result = tokio::time::timeout(
-            Duration::from_millis(500),
+            Duration::from_millis(450),
             client.lookup("books.fixture.test"),
         )
         .await;
@@ -390,6 +582,82 @@ mod tests {
                 .unwrap(),
             vec!["203.0.113.20".parse::<IpAddr>().unwrap()]
         );
+    }
+    #[tokio::test]
+    async fn cache_survives_doh_service_disconnection_and_coalesces_eight_callers() {
+        let (url, trust, server) = service(ResponseCode::NoError, false).await;
+        let client = Arc::new(fixture_client(url, trust));
+        let mut requests = Vec::new();
+        for _ in 0..8 {
+            let client = client.clone();
+            requests.push(tokio::spawn(async move {
+                client.lookup("books.fixture.test").await.unwrap()
+            }));
+        }
+        for request in requests {
+            assert_eq!(
+                request.await.unwrap(),
+                vec!["203.0.113.20".parse::<IpAddr>().unwrap()]
+            );
+        }
+        server.await.unwrap();
+        assert!(
+            client.lookup("BOOKS.fixture.test.").await.is_ok(),
+            "TTL cache must avoid another wire request after service disconnects"
+        );
+        client.clear_cache().await;
+        assert!(
+            client.lookup("books.fixture.test").await.is_err(),
+            "Applying settings must allow a fresh diagnostic query"
+        );
+    }
+    #[tokio::test]
+    async fn zero_ttl_and_expired_answers_are_not_reused() {
+        let (url, trust, server) = service_with_ttl(ResponseCode::NoError, false, 0, 4).await;
+        let client = fixture_client(url, trust);
+        client.lookup("books.fixture.test").await.unwrap();
+        client.lookup("books.fixture.test").await.unwrap();
+        server.await.unwrap();
+        assert!(client.lookup("books.fixture.test").await.is_err());
+        let (url, trust, server) = service_with_ttl(ResponseCode::NoError, false, 1, 2).await;
+        let client = fixture_client(url, trust);
+        client.lookup("books.fixture.test").await.unwrap();
+        server.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            client.lookup("books.fixture.test").await.is_err(),
+            "Expired TTL must trigger an actual new query"
+        );
+    }
+    #[tokio::test]
+    async fn slower_address_family_is_merged_without_another_wire_lookup() {
+        for delayed in [RecordType::A, RecordType::AAAA] {
+            let (url, trust, server) =
+                service_delayed(ResponseCode::NoError, false, 60, 2, Some(delayed)).await;
+            let resolver = fixture_client(url, trust);
+            let first = tokio::time::timeout(
+                Duration::from_millis(350),
+                resolver.lookup("books.fixture.test"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(first.len(), 1);
+            server.await.unwrap();
+            let both = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let ips = resolver.lookup("books.fixture.test").await.unwrap();
+                    if ips.len() == 2 {
+                        break ips;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(both.contains(&"203.0.113.20".parse::<IpAddr>().unwrap()));
+            assert!(both.contains(&"2001:db8::20".parse::<IpAddr>().unwrap()));
+        }
     }
     #[test]
     fn complete_endpoint_preserves_custom_port_path_and_query() {

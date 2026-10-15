@@ -38,6 +38,7 @@ for attempt in {1..20}; do
   sleep 1
 done
 test "$ui_ready" = true
+python3 scripts/android-download-smoke.py
 adb shell pidof app.luminashelf.client > smoke/pid.txt
 adb logcat -d > smoke/logcat.txt
 if grep -q 'Process: app.luminashelf.client.*PID:' smoke/logcat.txt; then

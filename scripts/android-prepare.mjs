@@ -26,6 +26,15 @@ export function prepareAndroid() {
     );
     writeFileSync(manifest, xml);
   }
+  for (const permission of ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "WAKE_LOCK"]) {
+    if (!xml.includes(`android.permission.${permission}"`)) {
+      xml = xml.replace("<application", `<uses-permission android:name="android.permission.${permission}" />\n    <application`);
+    }
+  }
+  if (!xml.includes('android:name=".DownloadService"')) {
+    xml = xml.replace("</application>", '<service android:name=".DownloadService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />\n    </application>');
+  }
+  writeFileSync(manifest, xml);
   const properties = resolve(android, "gradle.properties");
   let content = readFileSync(properties, "utf8");
   if (!content.includes("android.overridePathCheck=")) {
@@ -48,6 +57,11 @@ export function prepareAndroid() {
   const icons = resolve(root, "src-tauri/icons/android");
   if (existsSync(icons)) cpSync(icons, resolve(android, "app/src/main/res"), { recursive: true });
   cpSync(resolve(root, "src-tauri/android/MainActivity.kt"), resolve(android, "app/src/main/java/app/luminashelf/client/MainActivity.kt"));
+  for (const source of ["DownloadPlugin.kt", "DownloadService.kt"]) {
+    cpSync(resolve(root, "src-tauri/android", source), resolve(android, "app/src/main/java/app/luminashelf/client", source));
+  }
+  mkdirSync(resolve(android, "app/src/main/res/drawable"), { recursive: true });
+  cpSync(resolve(root, "src-tauri/android/lumina_download.xml"), resolve(android, "app/src/main/res/drawable/lumina_download.xml"));
   cpSync(resolve(root, "src-tauri/android/file_paths.xml"), resolve(android, "app/src/main/res/xml/file_paths.xml"));
   for (const resource of ["values", "values-night"]) {
     const directory = resolve(android, "app/src/main/res", resource);

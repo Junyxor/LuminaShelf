@@ -85,6 +85,7 @@ try {
             $symbol = 'Java_app_luminashelf_client_Rust_' + $method.Groups[1].Value
             if (-not ($exports -match ($symbol + '$'))) { throw "$abi Android JNI export is missing: $symbol" }
         }
+        if (-not ($exports -match 'Java_app_luminashelf_client_DownloadNative_pauseAll$')) { throw "$abi background download JNI callback is missing" }
         $libraries += @{ abi = $abi; loadAlignments = $alignments; jniExportsVerified = $true; nativeMethods = $nativeMethods.Count; bytes = $entry.Length }
     }
 } finally {

@@ -44,6 +44,9 @@ pub fn validate_readable_file(path: &Path) -> Result<()> {
         LibraryFormat::Txt => {
             crate::open_book_metadata(path).context("无法读取文本编码")?;
         }
+        LibraryFormat::Zip => {
+            zip::ZipArchive::new(file).context("压缩书包内容损坏")?;
+        }
         _ => {}
     }
     Ok(())
@@ -59,6 +62,7 @@ pub enum LibraryFormat {
     Txt,
     Cbz,
     Djvu,
+    Zip,
     Other,
 }
 
@@ -78,6 +82,7 @@ impl LibraryFormat {
             "txt" => Self::Txt,
             "cbz" | "cbr" => Self::Cbz,
             "djvu" | "djv" => Self::Djvu,
+            "zip" => Self::Zip,
             _ => Self::Other,
         }
     }
@@ -91,6 +96,7 @@ impl LibraryFormat {
             Self::Txt => "txt",
             Self::Cbz => "cbz",
             Self::Djvu => "djvu",
+            Self::Zip => "zip",
             Self::Other => "other",
         }
     }

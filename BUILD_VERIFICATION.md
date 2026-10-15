@@ -1,5 +1,44 @@
 # Release validation
 
+## 0.8.0 acceptance work — 2026-10-15
+
+Target: same application ID/certificate as 0.7, version code 8000, min SDK24,
+target SDK36, universal arm64-v8a/armeabi-v7a/x86_64 release APK.
+
+Download regressions use real local HTTP sockets: body disconnect and offset
+retry, actual simultaneous ranges without a HEAD declaration, range ignored
+initially or after probing, mismatched/416 responses, segment pause with no writes
+after return, new signed URL and connection limit, ETag change, full legacy-prefix
+comparison and cross-origin credential removal. A stalled-header test exercises
+the actual 25-second response deadline. Manager tests reopen a disk SQLite file,
+recover an active task as paused, resume its saved bytes, renew an expired link,
+keep partial bytes after cancellation, enforce the queue limit, deduplicate books,
+reattach completed books removed from the shelf, and preserve the library when a
+task record is removed. A ZIP book-bundle regression preserves its exact contents.
+
+DoH fixtures use real TLS and DNS wire messages, with custom endpoint/port/query,
+strict trust checks, eight simultaneous callers, TTL0/expiry, cache invalidation,
+stalled AAAA and both delayed address families. Fast answers must arrive within
+350–450ms while late answers must merge into the cache without another query.
+
+Headless UI checks at320/390/768/1280px use explicit fixtures, including the user's
+5.5/34MB failed-task pattern. CDP injects actual touch start/end and verifies that
+long-press release opens management without activating a destructive action.
+Pause/progress/settings survive reload; visible task buttons are at least48px.
+Hidden native and signed-Android smoke results are recorded separately under
+`artifacts/testing/v08/` and the Actions artifacts; they are not fixture claims.
+
+Android Kotlin and manifest compilation passed locally. Cloud smoke additionally
+drives the signed release through Android accessibility, shapes the emulator's
+cellular network, verifies real foreground/background byte progress, pauses,
+force-stops the process, confirms persisted bytes, long-presses the task, resumes
+to completion and opens the built-in EPUB reader. The actual CI conclusion and
+downloaded evidence remain authoritative; a defined test is not a passing result.
+
+Review outcomes and fixes are recorded in [0.8 review](docs/release-v08-review.md).
+Private account, cloud/email delivery and external reading applications are not
+exercised automatically. No merge or GitHub Release publication is automatic.
+
 ## 0.7.0 acceptance record — 2026-10-15
 
 The 0.7 release target is application ID `app.luminashelf.client`, version code

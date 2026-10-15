@@ -12,6 +12,7 @@ pub struct NetworkClient {
     user_agent: Arc<str>,
     timeout: Option<Duration>,
     allow_redirects: bool,
+    download: bool,
     cached: Arc<Mutex<(u64, Client)>>,
 }
 
@@ -25,13 +26,26 @@ impl NetworkClient {
         timeout: Option<Duration>,
         allow_redirects: bool,
     ) -> Result<Self> {
-        let client = Self::build(&resolver, user_agent, timeout, allow_redirects)?;
+        Self::with_profile(resolver, user_agent, timeout, allow_redirects, false)
+    }
+    pub fn for_download(resolver: AppResolver) -> Result<Self> {
+        Self::with_profile(resolver, "LuminaShelf file transfer", None, false, true)
+    }
+    fn with_profile(
+        resolver: AppResolver,
+        user_agent: &str,
+        timeout: Option<Duration>,
+        allow_redirects: bool,
+        download: bool,
+    ) -> Result<Self> {
+        let client = Self::build(&resolver, user_agent, timeout, allow_redirects, download)?;
         Ok(Self {
             cached: Arc::new(Mutex::new((resolver.revision(), client))),
             resolver,
             user_agent: user_agent.into(),
             timeout,
             allow_redirects,
+            download,
         })
     }
     pub fn client(&self) -> Result<Client> {
@@ -48,6 +62,7 @@ impl NetworkClient {
                     &self.user_agent,
                     self.timeout,
                     self.allow_redirects,
+                    self.download,
                 )?,
             );
         }
@@ -75,6 +90,7 @@ impl NetworkClient {
         user_agent: &str,
         timeout: Option<Duration>,
         allow_redirects: bool,
+        download: bool,
     ) -> Result<Client> {
         let mut builder: ClientBuilder = Client::builder()
             .connect_timeout(Duration::from_secs(8))
@@ -90,6 +106,9 @@ impl NetworkClient {
             .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())));
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
+        }
+        if download {
+            builder = builder.no_gzip().no_brotli().no_deflate();
         }
         if let Some(proxy) = resolver.proxy_url() {
             builder = builder.proxy(reqwest::Proxy::all(&proxy).context("代理地址无效")?);

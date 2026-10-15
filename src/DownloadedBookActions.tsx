@@ -5,7 +5,7 @@ import { X, BookOpen, ExternalLink, Share2, Download, ArrowRightLeft, Trash2 } f
 import type { LibraryItem } from "./types";
 import { openExternalFile } from "./external-files";
 type FileBridge = { shareFile: (path: string, mime: string, title: string) => string };
-function mime(format: string) { return ({ epub: "application/epub+zip", pdf: "application/pdf", txt: "text/plain", mobi: "application/x-mobipocket-ebook" } as Record<string, string>)[format] || "application/octet-stream"; }
+function mime(format: string) { return ({ epub: "application/epub+zip", pdf: "application/pdf", txt: "text/plain", mobi: "application/x-mobipocket-ebook", zip: "application/zip" } as Record<string, string>)[format] || "application/octet-stream"; }
 export default function DownloadedBookActions({ item, onClose, onRead, onRemove, onDelete, onRetry, onConverted }: { item: LibraryItem | null; onClose: () => void; onRead: (item: LibraryItem) => void; onRemove: (item: LibraryItem) => void; onDelete: (item: LibraryItem) => void; onRetry: (item: LibraryItem) => void; onConverted: (item: LibraryItem) => void }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);

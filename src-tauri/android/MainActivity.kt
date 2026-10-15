@@ -70,6 +70,7 @@ class MainActivity : TauriActivity() {
                     "mobi" -> "application/x-mobipocket-ebook"
                     "azw3" -> "application/vnd.amazon.ebook"
                     "cbz" -> "application/vnd.comicbook+zip"
+                    "zip" -> "application/zip"
                     "djvu", "djv" -> "image/vnd.djvu"
                     else -> return "此格式暂不支持外部打开"
                 }
@@ -105,6 +106,7 @@ class MainActivity : TauriActivity() {
                     "mobi" -> "application/x-mobipocket-ebook"
                     "azw3" -> "application/vnd.amazon.ebook"
                     "cbz" -> "application/vnd.comicbook+zip"
+                    "zip" -> "application/zip"
                     "djvu", "djv" -> "image/vnd.djvu"
                     else -> return "此格式暂不支持分享"
                 }

@@ -1,4 +1,5 @@
 use crate::{
+    download::DownloadTask,
     library::{now_unix_ms, LibraryFormat, LibraryItem},
     network::DnsProfile,
     user_state::{AccountProfile, FavoriteBook, ReadingProgress},
@@ -54,6 +55,11 @@ impl StateStore {
             CREATE TABLE IF NOT EXISTS app_settings (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS download_tasks (
+              id TEXT PRIMARY KEY,
+              task_json TEXT NOT NULL,
+              created_at_unix_ms INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS dns_profiles (
               id TEXT PRIMARY KEY,
@@ -123,6 +129,24 @@ impl StateStore {
                  updated_at_unix_ms=excluded.updated_at_unix_ms"#,
             params![profile.id, profile.provider_id, profile.label, profile.login_hint, profile.active as i64, profile.created_at_unix_ms, profile.updated_at_unix_ms],
         )?;
+        Ok(())
+    }
+
+    pub fn download_tasks(&self) -> Result<Vec<DownloadTask>> {
+        let connection = self.conn()?;
+        let mut statement = connection
+            .prepare("SELECT task_json FROM download_tasks ORDER BY created_at_unix_ms DESC, id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+    pub fn save_download_task(&self, task: &DownloadTask) -> Result<()> {
+        self.conn()?.execute("INSERT INTO download_tasks(id,task_json,created_at_unix_ms) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET task_json=excluded.task_json",
+            params![task.id, serde_json::to_string(task)?, task.created_at_unix_ms])?;
+        Ok(())
+    }
+    pub fn remove_download_task(&self, id: &str) -> Result<()> {
+        self.conn()?
+            .execute("DELETE FROM download_tasks WHERE id=?1", [id])?;
         Ok(())
     }
 
