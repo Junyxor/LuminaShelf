@@ -7,7 +7,7 @@ The 0.7 release target is application ID `app.luminashelf.client`, version code
 
 Locally completed checks:
 
-- 44 core tests and 9 Tauri bridge tests, including real HTTPS DoH wire requests,
+- 44 core tests and 10 Tauri bridge tests, including real HTTPS DoH wire requests,
   persistent named DNS/favorites, JSON download descriptor validation, redirect
   handling, Chinese TXT/EPUB round trips and mirror-table exclusion rules.
 - Production TypeScript/Vite build and headless UI workflows at 320/390/768/1280 px:
@@ -24,6 +24,10 @@ Locally completed checks:
   afterward. Export checks opened-file identity before truncation, including hard
   links; DNS selection compares the full normalized policy. The UI regression runs
   at all four widths and checks editing/saving/deleting the correct profile.
+- A separate regression reproduces and fixes announcement cache collisions between
+  the same host's different HTTPS ports. Cached feeds are keyed by complete origin
+  and checked against the current source before normal display or error fallback,
+  keeping another site's activity/donation links out of the selected site's feed.
 - Live directory and GitHub community-table retrieval produced 22 unique mirror
   candidates; `zlib.bz` passed current EAPI checks. Selecting it returned 100 actual
   popularity cards, real details and the actual available format. These are

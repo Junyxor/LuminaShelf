@@ -103,15 +103,23 @@ fn parse_app_items(raw: &str) -> Result<Vec<Announcement>, String> {
     Ok(envelope.items.into_iter().take(30).collect())
 }
 
+fn announcement_cache_key(origin: &Url) -> String {
+    format!("announcements:{origin}")
+}
+
+fn cached_feed(store: &StateStore, origin: &Url) -> Result<Option<Feed>, String> {
+    Ok(store
+        .setting(&announcement_cache_key(origin))
+        .map_err(|e| e.to_string())?
+        .and_then(|raw| serde_json::from_str::<Feed>(&raw).ok())
+        .filter(|feed| feed.site_origin == origin.as_str()))
+}
+
 #[tauri::command]
 pub async fn announcement_feeds(state: State<'_, AppState>, refresh: bool) -> Result<Feed, String> {
     let origin = state.zlibrary.origin().await;
-    let key = format!("announcements:{}", origin.host_str().unwrap_or("source"));
-    let cached: Option<Feed> = state
-        .state_store
-        .setting(&key)
-        .map_err(|e| e.to_string())?
-        .and_then(|raw| serde_json::from_str(&raw).ok());
+    let key = announcement_cache_key(&origin);
+    let cached = cached_feed(&state.state_store, &origin)?;
     if !refresh {
         if let Some(feed) = cached
             .as_ref()
@@ -343,6 +351,56 @@ pub fn open_announcement_link(app: AppHandle, url: String) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn announcement_cache_cannot_reuse_another_sources_activity_links() {
+        let store = StateStore::open_memory().unwrap();
+        let first = Url::parse("https://books.example.org:8443/").unwrap();
+        let second = Url::parse("https://books.example.org:9443/").unwrap();
+        let feed = |origin: &Url| Feed {
+            app_items: Vec::new(),
+            site_items: parse_banner("<a href='/support'>捐赠活动</a>", origin),
+            site_origin: origin.to_string(),
+            fetched_at_unix_ms: now_unix_ms(),
+            app_source: "test".into(),
+            site_error: None,
+            app_error: None,
+        };
+        let first_json = serde_json::to_string(&feed(&first)).unwrap();
+        store
+            .set_setting(&announcement_cache_key(&first), &first_json)
+            .unwrap();
+        assert_eq!(
+            cached_feed(&store, &first).unwrap().unwrap().site_origin,
+            first.as_str()
+        );
+        assert!(
+            cached_feed(&store, &second).unwrap().is_none(),
+            "A newly selected source must not reuse the previous source's feed"
+        );
+        // A mismatched persisted record must also be excluded from refresh/error fallback.
+        store
+            .set_setting(&announcement_cache_key(&second), &first_json)
+            .unwrap();
+        assert!(cached_feed(&store, &second).unwrap().is_none());
+        store
+            .set_setting(
+                &announcement_cache_key(&second),
+                &serde_json::to_string(&feed(&second)).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            cached_feed(&store, &first).unwrap().unwrap().site_origin,
+            first.as_str()
+        );
+        let second_feed = cached_feed(&store, &second).unwrap().unwrap();
+        assert_eq!(second_feed.site_origin, second.as_str());
+        assert_eq!(
+            second_feed.site_items[1].url.as_deref(),
+            Some("https://books.example.org:9443/support")
+        );
+    }
+
     #[test]
     fn banner_links_are_read_from_source_and_unsafe_links_are_rejected() {
         let items=parse_banner("<div>活动公告 <a href='/support'>支持项目</a><a href='javascript:alert(1)'>bad</a></div>",&Url::parse("https://books.example.org").unwrap());
