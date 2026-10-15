@@ -51,6 +51,12 @@ The same folder contains its `.sha256` checksum, `release-certificate.pem` and
 libraries; native ELF segments and APK native library entries are aligned for
 16 KB pages.
 
+After building, run `./scripts/verify-apk.ps1` in PowerShell with the same SDK/JDK
+environment. It verifies the manifest, non-debuggable flag, three ABIs, original
+certificate, v2/v3 signatures, 16 KB ZIP/ELF alignment and every JNI method declared
+in the generated Kotlin runtime. CI runs this check and uploads
+`apk-verification.json` alongside the APK.
+
 The first release creates `.signing/luminashelf-release.p12` (a PKCS#12 keystore
 with a 3072-bit RSA key) and `.signing/release.json` (alias and generated password).
 Back up both files together. Keep that backup private and retain it for future

@@ -329,7 +329,7 @@ pub async fn export_library_book(
     library_id: String,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    use tauri_plugin_fs::{FsExt, OpenOptions};
+    use tauri_plugin_fs::FsExt;
     let item = state
         .state_store
         .list_library_items()
@@ -353,17 +353,86 @@ pub async fn export_library_book(
     };
     let label = destination.to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut input = fs::File::open(item.path).map_err(|e| e.to_string())?;
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        let mut output = app
-            .fs()
-            .open(destination, options)
-            .map_err(|e| e.to_string())?;
-        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-        Ok::<_, String>(())
+        copy_export_file(&item.path, |options| app.fs().open(destination, options))
     })
     .await
     .map_err(|e| e.to_string())??;
     Ok(Some(label))
+}
+
+fn copy_export_file(
+    source: &Path,
+    open_destination: impl FnOnce(tauri_plugin_fs::OpenOptions) -> std::io::Result<fs::File>,
+) -> Result<(), String> {
+    let input = fs::File::open(source).map_err(|e| e.to_string())?;
+    let mut options = tauri_plugin_fs::OpenOptions::new();
+    // Android's "rw" mode also avoids truncating a content URI before identity checks.
+    options.read(true).write(true).create(true);
+    let output = open_destination(options).map_err(|e| e.to_string())?;
+    let input = same_file::Handle::from_file(input).map_err(|e| e.to_string())?;
+    let mut output = same_file::Handle::from_file(output).map_err(|e| e.to_string())?;
+    if input == output {
+        return Err("导出位置与原书是同一个文件，请选择其他位置".into());
+    }
+    let output = output.as_file_mut();
+    // A new document provider may return a pipe; it has no existing tail to truncate.
+    if output.metadata().map_err(|e| e.to_string())?.len() > 0 {
+        output.set_len(0).map_err(|e| e.to_string())?;
+    }
+    std::io::copy(&mut input.as_file(), output).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_rejects_original_and_hard_link_without_modifying_the_book() {
+        let directory =
+            std::env::temp_dir().join(format!("lumina-export-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("原书.txt");
+        let alias = directory.join("同一本书.txt");
+        let text = "导出不能破坏原有书籍。";
+        fs::write(&source, text).unwrap();
+        fs::hard_link(&source, &alias).unwrap();
+        for destination in [&source, &alias] {
+            let result = copy_export_file(&source, |options| {
+                fs::OpenOptions::from(options).open(destination)
+            });
+            assert!(
+                result.is_err(),
+                "Exporting onto the original must be rejected"
+            );
+            assert_eq!(fs::read_to_string(&source).unwrap(), text);
+        }
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn export_replaces_destination_with_exact_contents() {
+        let directory =
+            std::env::temp_dir().join(format!("lumina-export-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("书籍.txt");
+        let destination = directory.join("导出.txt");
+        fs::write(&source, "书籍内容").unwrap();
+        for existing in [None, Some("需要覆盖的更长旧内容，需要完全移除尾部。")]
+        {
+            if let Some(text) = existing {
+                fs::write(&destination, text).unwrap();
+            }
+            copy_export_file(&source, |options| {
+                fs::OpenOptions::from(options).open(&destination)
+            })
+            .unwrap();
+            assert_eq!(fs::read(&destination).unwrap(), fs::read(&source).unwrap());
+        }
+        fs::remove_file(destination).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 }

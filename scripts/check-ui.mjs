@@ -105,6 +105,24 @@ try {
     await page.getByRole("button", { name: "删除 备用普通 DNS", exact: true }).click();
     await page.reload(); await nav.getByRole("button", { name: "设置", exact: true }).click(); await page.getByRole("button", { name: /DNS 服务器与网络/ }).click();
     await page.getByRole("button", { name: "编辑 我的专属 DNS", exact: true }).waitFor(); assert.equal(await page.getByRole("button", { name: "编辑 备用普通 DNS", exact: true }).count(), 0);
+    // The same DNS URL can be saved with different Hosts/proxy/fallback policies.
+    await page.evaluate(() => {
+      const items = JSON.parse(sessionStorage.getItem("ui-profiles"));
+      const original = items[0];
+      const other = { id: "same-endpoint", name: "同地址另一配置", policy: { ...original.policy, appHosts: { "other.example": ["203.0.113.5"] }, proxyUrl: "http://127.0.0.1:8080", fallbackToSystem: true, timeoutMs: 9000 } };
+      sessionStorage.setItem("ui-profiles", JSON.stringify([original, other]));
+      sessionStorage.setItem("ui-policy", JSON.stringify(other.policy));
+    });
+    await page.reload(); await nav.getByRole("button", { name: "设置", exact: true }).click(); await page.getByRole("button", { name: /DNS 服务器与网络/ }).click();
+    await page.getByRole("button", { name: "编辑 同地址另一配置", exact: true }).waitFor();
+    assert.equal(await page.getByLabel("配置名称", { exact: true }).inputValue(), "同地址另一配置", "Same-endpoint profiles selected the wrong profile for editing");
+    assert.equal(await page.locator(".profile-current").count(), 1);
+    await page.getByRole("button", { name: "保存并应用", exact: true }).click(); await page.getByText("已保存并应用到搜索、下载和封面连接", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.__uiCalls.findLast((call) => call.command === "save_dns_profile").args.profile.id), "same-endpoint");
+    await page.getByRole("button", { name: "删除 我的专属 DNS", exact: true }).click();
+    await page.getByText("已移除 DNS 配置", { exact: true }).waitFor();
+    assert.equal(await page.locator(".profile-current").count(), 1);
+    await page.getByRole("button", { name: "删除 同地址另一配置", exact: true }).click(); await page.getByText("已移除配置，当前使用系统 DNS", { exact: true }).waitFor();
     await nav.getByRole("button", { name: "找书", exact: true }).click();
     await page.getByRole("heading", { name: "古登堡热门", exact: true }).waitFor();
     await page.getByRole("button", { name: "收藏 一部用于收藏与下载验证的远程书籍", exact: true }).click();
@@ -133,7 +151,7 @@ try {
     await page.getByRole("button", { name: "检查更新", exact: true }).click(); await page.getByRole("heading", { name: "项目尚无已发布版本信息", exact: true }).waitFor();
     await page.getByRole("tab", { name: "当前书源公告", exact: true }).click(); await page.getByRole("heading", { name: "暂未取得当前书源公告", exact: true }).waitFor();
     assert.deepEqual(errors, [], "Frontend exceptions");
-    results.push({ width, settingsTarget: size, namedDnsProfilesPersisted: true, bootstrapList: true, favoritesIndependentOfDownloads: true, formatSelected: "txt", longPressManagement: true, mirrors: true, updateAbsenceHandled: true, lightTheme: true, readerTargets: targets });
+    results.push({ width, settingsTarget: size, namedDnsProfilesPersisted: true, sameEndpointProfilesDistinct: true, bootstrapList: true, favoritesIndependentOfDownloads: true, formatSelected: "txt", longPressManagement: true, mirrors: true, updateAbsenceHandled: true, lightTheme: true, readerTargets: targets });
     await context.close(); currentPage = null;
   }
 } catch (error) {

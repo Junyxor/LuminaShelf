@@ -8,6 +8,7 @@ The light reader UI uses these established projects:
 - [Tauri opener](https://github.com/tauri-apps/plugins-workspace), MIT OR Apache-2.0: explicit external website/default desktop application opening.
 - [Scraper](https://github.com/rust-scraper/scraper), ISC, and HTML5ever, MIT OR Apache-2.0: parse source announcement markup without executing page scripts.
 - [html-escape](https://github.com/magiclen/html-escape), MIT: decode book-title and description entities.
+- [same-file](https://github.com/BurntSushi/same-file), Unlicense OR MIT: compare opened-file identity before exporting, including hard links.
 - [React](https://github.com/facebook/react), MIT: UI rendering.
 - [PDF.js](https://github.com/mozilla/pdf.js), Apache-2.0: local PDF rendering using native range IPC.
 - [Reqwest](https://github.com/seanmonstar/reqwest), MIT OR Apache-2.0, [Hickory DNS](https://github.com/hickory-dns/hickory-dns), MIT OR Apache-2.0, and [Rustls](https://github.com/rustls/rustls), Apache-2.0 OR ISC OR MIT: HTTP, DNS wire encoding, encrypted DNS and TLS certificate validation.

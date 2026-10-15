@@ -11,7 +11,12 @@ function address(policy: ResolverPolicy) {
   if (policy.mode === "custom_dns") return `${policy.upstreamIp || ""}:${policy.upstreamPort || 53}`;
   return "系统 DNS";
 }
-function dnsKey(policy: ResolverPolicy) { return JSON.stringify([policy.mode, address(policy), policy.upstreamIp || null, [...(policy.bootstrapIps || [])].sort()]); }
+function dnsKey(policy: ResolverPolicy) {
+  const value = { ...defaultPolicy, ...policy };
+  return JSON.stringify([value.mode, Object.entries(value.appHosts).sort(([a], [b]) => a.localeCompare(b)),
+    value.upstreamIp ?? null, value.bootstrapIps ?? [], value.serverName ?? null, value.dohPath ?? "/dns-query",
+    value.dohUrl ?? null, value.upstreamPort ?? null, value.proxyUrl ?? null, value.fallbackToSystem, value.timeoutMs]);
+}
 const protocolName: Record<ResolverMode, string> = { system: "系统", app_hosts: "Hosts", doh: "DoH", dot: "DoT", custom_dns: "DNS" };
 
 export default function DnsSettings() {
@@ -78,7 +83,7 @@ export default function DnsSettings() {
     try {
       const policy = await invoke<ResolverPolicy>("remove_dns_profile", { id: profile.id }); setProfiles((items) => items.filter((item) => item.id !== profile.id)); setApplied(policy);
       if (editingId === profile.id) { adopt(policy); setEditingId(""); setName("当前配置"); }
-      setMessage(dnsKey(profile.policy) === dnsKey(applied) ? "已移除配置，当前使用系统 DNS" : "已移除 DNS 配置");
+      setMessage(dnsKey(profile.policy) === dnsKey(applied) && policy.mode === "system" ? "已移除配置，当前使用系统 DNS" : "已移除 DNS 配置");
     } catch (reason) { setError(String(reason)); } finally { setBusy(null); }
   }
   async function testProfile(profile: Profile) {

@@ -7,7 +7,7 @@ The 0.7 release target is application ID `app.luminashelf.client`, version code
 
 Locally completed checks:
 
-- 44 core tests and 7 Tauri bridge tests, including real HTTPS DoH wire requests,
+- 44 core tests and 9 Tauri bridge tests, including real HTTPS DoH wire requests,
   persistent named DNS/favorites, JSON download descriptor validation, redirect
   handling, Chinese TXT/EPUB round trips and mirror-table exclusion rules.
 - Production TypeScript/Vite build and headless UI workflows at 320/390/768/1280 px:
@@ -18,6 +18,12 @@ Locally completed checks:
   fallback disabled, automatic selection followed by real search, a 189,249-byte
   EPUB download and native chapter read, TXT/PDF import, PDF rendering/page/zoom
   progress, TXT→EPUB→TXT conversion and scoped deletion of a QA-managed file.
+- Review found and reproduced an export-to-original data-loss bug and a profile
+  mix-up when two saved DNS configurations share an endpoint but differ in proxy,
+  Hosts, fallback or timeout. Both regressions failed before the fixes and passed
+  afterward. Export checks opened-file identity before truncation, including hard
+  links; DNS selection compares the full normalized policy. The UI regression runs
+  at all four widths and checks editing/saving/deleting the correct profile.
 - Live directory and GitHub community-table retrieval produced 22 unique mirror
   candidates; `zlib.bz` passed current EAPI checks. Selecting it returned 100 actual
   popularity cards, real details and the actual available format. These are
@@ -32,6 +38,9 @@ separate from live native checks. GitHub Actions defines signed build and Androi
 launch verification; its actual run conclusion and uploaded artifacts are the
 authoritative CI result. APK identity/source/hash data is generated in
 `artifacts/android/*-build-info.json` by the release script.
+`scripts/verify-apk.ps1` independently checks the signed APK manifest, three ABIs,
+v2/v3 signatures, certificate continuity, 16 KB ZIP/ELF alignment and Kotlin/JNI
+exports. CI uploads its report with the signed package.
 
 Real-device document providers, installed external reader/share applications and
 authenticated vendor conversion/email/Kindle/cloud actions remain manual checks
