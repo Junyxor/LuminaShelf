@@ -379,19 +379,16 @@ impl DownloadManager {
         self.task(id).await
     }
     pub async fn pause_all(&self) -> Result<()> {
-        let ids = self
-            .0
-            .queue
-            .lock()
-            .await
-            .tasks
-            .values()
-            .filter(|task| task.state.is_active())
-            .map(|task| task.id.clone())
-            .collect::<Vec<_>>();
-        // Mark every control before awaiting any one worker, so no queued task starts in between.
-        {
+        // Capture and mark under one lock: a worker can finish immediately after
+        // releasing it, and its Completed state must never be overwritten here.
+        let ids = {
             let mut queue = self.0.queue.lock().await;
+            let ids = queue
+                .tasks
+                .values()
+                .filter(|task| task.state.is_active())
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>();
             for id in &ids {
                 if let Some(run) = queue.running.get(id) {
                     run.control.pause();
@@ -401,7 +398,8 @@ impl DownloadManager {
                     self.save(task)?;
                 }
             }
-        }
+            ids
+        };
         for id in ids {
             self.pause_worker(&id).await?;
         }
@@ -751,9 +749,52 @@ fn download_error(error: &anyhow::Error) -> String {
 }
 
 #[cfg(test)]
-mod bundle_tests {
+mod tests {
     use super::*;
     use std::io::Write;
+    #[tokio::test]
+    async fn completing_a_book_during_pause_all_keeps_it_completed() {
+        let manager = DownloadManager::new(
+            StateStore::open_memory().unwrap(),
+            ProviderRegistry::default(),
+            AppResolver::system().unwrap(),
+        )
+        .unwrap();
+        let mut task = DownloadTask::new(
+            "Completed book".into(),
+            "fixture".into(),
+            "one".into(),
+            BookFormat::Txt,
+            PathBuf::from("kept.txt"),
+            1,
+        );
+        task.state = DownloadState::Downloading;
+        let id = task.id.clone();
+        let mut guard = manager.0.queue.lock().await;
+        guard.tasks.insert(id.clone(), task);
+        let pausing = manager.clone();
+        let pause = tokio::spawn(async move {
+            pausing.pause_all().await.unwrap();
+        });
+        tokio::task::yield_now().await;
+        let completing = manager.clone();
+        let completed_id = id.clone();
+        let complete = tokio::spawn(async move {
+            let mut queue = completing.0.queue.lock().await;
+            let row = queue.tasks.get_mut(&completed_id).unwrap();
+            row.state = DownloadState::Completed;
+            completing.save(row).unwrap();
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+        pause.await.unwrap();
+        complete.await.unwrap();
+        assert_eq!(
+            manager.task(&id).await.unwrap().state,
+            DownloadState::Completed,
+            "Pause-all changed an already completed file into a resumable task"
+        );
+    }
     #[test]
     fn an_epub_named_book_bundle_is_preserved_as_an_exportable_zip() {
         let directory = std::env::temp_dir().join(format!("lumina-bundle-{}", Uuid::new_v4()));

@@ -40,3 +40,9 @@ availability without transmitting UDP packets before returning just one family;
 if that family has no route, it waits for the other query. Late answers still
 merge into the cache. The Android smoke selects a large Moby Dick EPUB through
 search, instead of depending on the first changing homepage recommendation.
+
+A deterministic FIFO-lock regression then exposed a completion race in pause-all:
+the task ID snapshot and status updates used separate locks, allowing completion
+between them to be overwritten as Pausing/Paused. The test failed with Paused
+instead of Completed. Both operations now use one lock, preserving completion
+and avoiding an unnecessary later redownload of a valid saved file.
