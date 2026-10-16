@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
 
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const directory = resolve("artifacts/testing/v08");
 mkdirSync(directory, { recursive: true });
 const data = resolve(directory, `native-data-${Date.now()}`); mkdirSync(data, { recursive: true });
@@ -50,7 +51,7 @@ try {
   assert(page, "Native main page is missing");
   await page.waitForFunction(() => window.__TAURI_INTERNALS__ && document.querySelector("h1"));
   const call = (command, args = {}) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  assert.equal((await call("core_status")).version, "0.8.0");
+  assert.equal((await call("core_status")).version, version);
   report.steps.push("native startup and IPC");
   await call("dns_profiles");
   const policy = { ...(await call("resolver_policy")), mode: "doh", dohUrl: "https://dns.alidns.com/dns-query", upstreamIp: null, serverName: null, proxyUrl: null, fallbackToSystem: false, timeoutMs: 5000 };

@@ -314,7 +314,7 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
     needs: [package, android-smoke]
     runs-on: windows-latest
     timeout-minutes: 10
@@ -335,6 +335,11 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           if ($env:RELEASE_TAG -ne "v$version") { throw 'Release tag must match the application version.' }
+          $tagRefs = @(& git ls-remote origin "refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}")
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check the release tag.' }
+          $tagCommit = $tagRefs | Where-Object { $_.EndsWith("`trefs/tags/$env:RELEASE_TAG^{}") }
+          if (-not $tagCommit) { $tagCommit = $tagRefs | Where-Object { $_.EndsWith("`trefs/tags/$env:RELEASE_TAG") } }
+          if ($tagCommit -and ($tagCommit -split '\s+')[0] -ne $env:GITHUB_SHA) { throw 'Existing release tag points to a different source commit.' }
           $notes = "docs/releases/$env:RELEASE_TAG.md"
           if (-not (Test-Path -LiteralPath $notes)) { throw 'Short release notes are required.' }
           $labels = [ordered]@{
