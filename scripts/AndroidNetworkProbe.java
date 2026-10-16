@@ -16,6 +16,7 @@ public final class AndroidNetworkProbe {
         connection.setRequestProperty("User-Agent", "LuminaShelf file transfer");
         if (args.length > 1 && "probe".equals(args[1])) connection.setRequestProperty("Range", "bytes=0-0");
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        int exitCode = 0;
         try {
             System.out.println("status=" + connection.getResponseCode());
             System.out.println("length=" + connection.getContentLengthLong());
@@ -31,10 +32,14 @@ public final class AndroidNetworkProbe {
             StringBuilder hash = new StringBuilder();
             for (byte value : digest.digest()) hash.append(String.format("%02x", value & 255));
             System.out.println("sha256=" + hash);
+        } catch (Exception error) {
+            error.printStackTrace(System.err);
+            exitCode = 1;
         } finally {
             System.out.println("bytes=" + bytes);
             System.out.println("elapsedMs=" + (System.nanoTime() - started) / 1000000);
             connection.disconnect();
         }
+        if (exitCode != 0) System.exit(exitCode);
     }
 }

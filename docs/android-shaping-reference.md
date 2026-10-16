@@ -47,4 +47,6 @@
 
 工作流可选 `network_diagnostics` 编译一个独立 Android 平台 TLS 探针，在同一 guest 对公开 Moby EPUB 分别执行单字节 Range 探测和整本下载，记录 HTTP 状态、Content-Range、字节、SHA-256 和耗时。首轮运行 `38857754038` 的宿主 Gutendex 元数据请求遭 HTTP403，平台探针尚未执行；可选诊断失败被记录，原 APP 验收仍执行并在传统限速下失败。不能将这轮结果表述成平台 TLS 同样失败。随后去掉元数据依赖，固定官方 API 刚核对的公开 EPUB 地址。
 
-另提供 `bandwidth_shaper=host`，在一次性 Linux Actions runner 创建自有 IFB/ingress，通过内核 TBF 将实际 IPv4 HTTPS 下行限制为256kbit/s。它不修改 APK、DNS 或 TLS；拒绝覆盖已有策略，仅清理本次标记为自有的资源。原有实际字节、后台进度、暂停、进程恢复、长按和阅读断言保留，另检查实际 tc 流量计数。该后端是否可用、是否有效限速以及 APP 是否通过，仍须以新的云端运行和证据为准。
+运行 `38858663120` 的平台对照实际完成：全速 Range 返回206、1字节、538ms；整本返回200、814023字节、639ms，SHA-256为`1bc88e79ef7cf9d5325abe0071e6302265b708df56d3af07db124c81e84197f6`。传统256kbps下两次请求均0字节，约22.5秒后出现`java.io.IOException: unexpected end of stream`；异常链来自 Android 系统 OkHttp，见该运行的`network-control/`和`logcat.txt`。这支持共同限速路径/目标行为的调查方向，不能证明具体模拟器源码缺陷。
+
+另提供 `bandwidth_shaper=host`，在一次性 Linux Actions runner 创建自有 IFB和独立 ingress filter，通过内核 TBF 将实际 IPv4 HTTPS 下行限制为256kbit/s。它不修改 APK、DNS 或 TLS；保留已有 ingress/clsact及其过滤规则，仅清理本次标记为自有的资源，创建新规则前拒绝占用的优先级或设备名。原有实际字节、后台进度、暂停、进程恢复、长按和阅读断言保留，另检查实际 tc 流量计数。首轮因已有 ingress 而主动拒绝覆盖；改为共存后该后端是否可用、是否有效限速以及 APP 是否通过，仍须以新的云端运行和证据为准。
