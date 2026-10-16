@@ -206,6 +206,34 @@ async fn inspect(
     url: &Url,
     headers: &header::HeaderMap,
     control: &DownloadControl,
+) -> Result<(Shape, usize)> {
+    for attempt in 0..=downloader.config.retries {
+        match inspect_once(downloader, url, headers, control).await {
+            Ok(shape) => return Ok((shape, attempt)),
+            Err(error) => {
+                let transport = error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+                    !error.is_builder()
+                        && (error.is_connect()
+                            || error.is_timeout()
+                            || error.is_body()
+                            || error.is_request())
+                }) || error
+                    .downcast_ref::<tokio::time::error::Elapsed>()
+                    .is_some();
+                if !transport || attempt == downloader.config.retries {
+                    return Err(error);
+                }
+                tokio::select! { biased; _ = control.paused() => return Err(TransferError::Paused.into()), _ = tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))) => {} }
+            }
+        }
+    }
+    unreachable!()
+}
+async fn inspect_once(
+    downloader: &SegmentedDownloader,
+    url: &Url,
+    headers: &header::HeaderMap,
+    control: &DownloadControl,
 ) -> Result<Shape> {
     let mut response = send(
         downloader
@@ -215,7 +243,7 @@ async fn inspect(
             .headers(headers.clone())
             .header(header::ACCEPT_ENCODING, "identity")
             .header(header::RANGE, "bytes=0-0")
-            .timeout(Duration::from_secs(15)),
+            .timeout(Duration::from_secs(30)),
         control,
     )
     .await?;
@@ -242,11 +270,11 @@ async fn inspect(
     };
     if ranges {
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(reqwest::Error::without_url)?
-        {
+        while let Some(chunk) = tokio::select! {
+            biased;
+            _ = control.paused() => return Err(TransferError::Paused.into()),
+            result = response.chunk() => result.map_err(reqwest::Error::without_url)?,
+        } {
             ensure!(body.len() + chunk.len() <= 1, TransferError::InvalidRange);
             body.extend_from_slice(&chunk);
         }
@@ -524,7 +552,7 @@ pub(super) async fn run(
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let mut shape = inspect(downloader, &url, &headers, &control).await?;
+    let (mut shape, probe_retries) = inspect(downloader, &url, &headers, &control).await?;
     // A range that is ignored later is retried as one full stream, never appended.
     for downgrade in 0..2 {
         let previous = load(&destination).await;
@@ -689,7 +717,7 @@ pub(super) async fn run(
             downloaded: AtomicU64::new(initial),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
-            retries: AtomicUsize::new(0),
+            retries: AtomicUsize::new(probe_retries),
             total: shape.total,
             ranges: shape.ranges,
             restarted: existing > 0 && initial == 0,

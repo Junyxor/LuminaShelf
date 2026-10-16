@@ -46,3 +46,14 @@ the task ID snapshot and status updates used separate locks, allowing completion
 between them to be overwritten as Pausing/Paused. The test failed with Paused
 instead of Completed. Both operations now use one lock, preserving completion
 and avoiding an unnecessary later redownload of a valid saved file.
+
+Cloud Android testing completed an unshaped Gutenberg EPUB download, but fresh
+connections under256kbps shaping repeatedly hit the8-second connection budget.
+File-transfer clients now allow25seconds for connection establishment; the
+one-byte capability probe allows30seconds overall and retries transient network
+errors with the configured bound. Protocol/version errors still stop immediately.
+Real-socket regressions first failed for an interrupted initial probe and for
+pause while a probe had headers but no body; both paths are now covered.
+A further encoded-response regression failed with three probe requests instead
+of one. Restricting retries to classified transport/timeouts resolves it while
+retaining immediate rejection of encoding and redirect protocol violations.

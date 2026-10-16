@@ -93,7 +93,7 @@ impl NetworkClient {
         download: bool,
     ) -> Result<Client> {
         let mut builder: ClientBuilder = Client::builder()
-            .connect_timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(if download { 25 } else { 8 }))
             .pool_idle_timeout(Duration::from_secs(60))
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)

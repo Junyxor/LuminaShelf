@@ -20,6 +20,9 @@ pub(super) enum Behavior {
     LateIgnoreRanges,
     Unsatisfiable,
     StallHeaders,
+    TransientProbe,
+    SlowProbe,
+    EncodedProbe,
 }
 
 pub(super) struct Fixture {
@@ -58,6 +61,7 @@ impl Fixture {
         let peak = Arc::new(AtomicUsize::new(0));
         let active = Arc::new(AtomicUsize::new(0));
         let full_requests = Arc::new(AtomicUsize::new(0));
+        let probe_requests = Arc::new(AtomicUsize::new(0));
         let server_data = data.clone();
         let server_ranges = ranges.clone();
         let server_peak = peak.clone();
@@ -73,6 +77,7 @@ impl Fixture {
                 let active = active.clone();
                 let peak = server_peak.clone();
                 let full_requests = full_requests.clone();
+                let probe_requests = probe_requests.clone();
                 let version = server_version.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
@@ -120,6 +125,12 @@ impl Fixture {
                                 end.parse::<u64>().unwrap_or(data.len() as u64 - 1),
                             ))
                         });
+                    if matches!(behavior, Behavior::TransientProbe)
+                        && range == Some((0, 0))
+                        && probe_requests.fetch_add(1, Ordering::SeqCst) == 0
+                    {
+                        return;
+                    }
                     if matches!(behavior, Behavior::StallHeaders) && range != Some((0, 0)) {
                         tokio::time::sleep(std::time::Duration::from_secs(40)).await;
                         return;
@@ -142,8 +153,17 @@ impl Fixture {
                         }
                         let offset =
                             u64::from(matches!(behavior, Behavior::WrongRange) && end > start);
-                        let header = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nETag: \"fixture-v{version}\"\r\nConnection: close\r\n\r\n", end - start + 1, start + offset, end + offset, data.len());
+                        let encoding = if matches!(behavior, Behavior::EncodedProbe) {
+                            "Content-Encoding: gzip\r\n"
+                        } else {
+                            ""
+                        };
+                        let header = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n{encoding}ETag: \"fixture-v{version}\"\r\nConnection: close\r\n\r\n", end - start + 1, start + offset, end + offset, data.len());
                         let _ = socket.write_all(header.as_bytes()).await;
+                        if matches!(behavior, Behavior::SlowProbe) && range == Some((0, 0)) {
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            return;
+                        }
                         let body = &data[start as usize..=end as usize];
                         if matches!(behavior, Behavior::Slow) && end > start {
                             for chunk in body.chunks(1024) {
@@ -232,6 +252,85 @@ async fn interrupted_body_is_retried_from_the_saved_offset() {
             .iter()
             .any(|(start, _)| *start == 8192),
         "Retry did not request the bytes after the saved prefix"
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_initial_probe_is_retried_before_marking_the_task_failed() {
+    let fixture = Fixture::new(Behavior::TransientProbe).await;
+    let path = fixture.directory.join("book.bin");
+    let (tx, _) = watch::channel(DownloadProgress::default());
+    fixture
+        .downloader(2, 16 * 1024)
+        .download_to(fixture.url.clone(), path.clone(), tx)
+        .await
+        .expect("A dropped initial probe must be retried just like a dropped file body");
+    assert_eq!(tokio::fs::read(path).await.unwrap(), *fixture.data);
+}
+
+#[tokio::test]
+async fn pause_interrupts_a_probe_that_has_headers_but_no_body() {
+    let fixture = Fixture::new(Behavior::SlowProbe).await;
+    let downloader = fixture.downloader(2, 16 * 1024);
+    let (tx, _) = watch::channel(DownloadProgress::default());
+    let control = DownloadControl::default();
+    let worker_control = control.clone();
+    let url = fixture.url.clone();
+    let path = fixture.directory.join("book.bin");
+    let worker = tokio::spawn(async move {
+        downloader
+            .download_controlled(
+                url,
+                path,
+                header::HeaderMap::new(),
+                None,
+                tx,
+                worker_control,
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while fixture.ranges.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    control.pause();
+    let error = tokio::time::timeout(std::time::Duration::from_millis(300), worker)
+        .await
+        .expect("Pause ignored while probe waited for its first byte")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<TransferError>(),
+        Some(TransferError::Paused)
+    ));
+}
+
+#[tokio::test]
+async fn a_probe_encoding_violation_is_not_retried_as_a_network_failure() {
+    let fixture = Fixture::new(Behavior::EncodedProbe).await;
+    let downloader = SegmentedDownloader::with_resolver(
+        AppResolver::system().unwrap(),
+        DownloadConfig {
+            concurrency: 2,
+            segment_size: 16 * 1024,
+            retries: 2,
+        },
+    )
+    .unwrap();
+    let (tx, _) = watch::channel(DownloadProgress::default());
+    let error = downloader
+        .download_to(fixture.url.clone(), fixture.directory.join("book.bin"), tx)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("原始字节"));
+    assert_eq!(
+        fixture.ranges.lock().await.len(),
+        1,
+        "A deterministic encoding violation was treated as a transient connection failure"
     );
 }
 

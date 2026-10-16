@@ -78,12 +78,15 @@ def evidence(name):
     return root
 
 
-def progress(root):
-    for node in root.iter("node"):
-        match = re.search(r"EPUB\s*·\s*([\d.]+)\s*(B|KB|MB|GB)\s*/", label(node))
-        if match:
-            return float(match[1]) * 1024 ** ["B", "KB", "MB", "GB"].index(match[2])
+def byte_progress(text):
+    match = re.search(r"EPUB\s*·\s*([\d.]+)\s*(B|KB|MB|GB)\s*/", text)
+    if match:
+        return float(match[1]) * 1024 ** ["B", "KB", "MB", "GB"].index(match[2])
     return 0
+
+
+def progress(root):
+    return max((byte_progress(label(node)) for node in root.iter("node")), default=0)
 
 
 try:
@@ -117,7 +120,7 @@ try:
     (OUT / "network-shaping.txt").write_text(adb("emu", "network", "status") + adb("shell", "dumpsys", "connectivity"), encoding="utf-8")
     started = time.monotonic()
     click("重新下载")
-    _, root = wait_node(lambda n: n.get("text") == "下载中", 100)
+    _, root = wait_node(lambda n: byte_progress(label(n)) >= 8192, 240)
     before = progress(root)
     service = adb("shell", "dumpsys", "activity", "services", PACKAGE)
     (OUT / "download-service-active.txt").write_text(service, encoding="utf-8")
@@ -157,6 +160,7 @@ try:
     evidence("download-completed")
     click("阅读")
     wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
+    wait_node(lambda n: len(n.get("text", "")) > 160, 60)
     evidence("download-reader")
     steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved})
 finally:
