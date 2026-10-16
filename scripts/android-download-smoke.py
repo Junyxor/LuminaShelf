@@ -30,7 +30,7 @@ def network_speed(speed, check=True):
 
 
 def tree():
-    result = adb("shell", "uiautomator", "dump", "--compressed", "/sdcard/lumina-download-test.xml", check=False)
+    result = adb("shell", "CLASSPATH=/data/local/tmp/lumina-ui-dump.dex:/system/framework/uiautomator.jar:/system/framework/android.test.runner.jar", "app_process", "/system/bin", "AndroidUiDump", "/sdcard/lumina-download-test.xml", check=False)
     if "dumped" not in result:
         raise RuntimeError("Android accessibility tree was not ready: " + result)
     return ET.fromstring(adb("shell", "cat", "/sdcard/lumina-download-test.xml"))

@@ -33,6 +33,7 @@ apk_path="$(find package -name "*-${apk_variant}-release.apk" -type f -print -qu
 test -n "$apk_path"
 adb install -r "$apk_path"
 adb logcat -c
+bash scripts/android-ui-dump.sh
 if [[ "${LUMINA_RUN_NETWORK_DIAGNOSTICS:-0}" == "1" ]]; then
   diagnostics_status=0
   bash scripts/android-network-diagnostics.sh > smoke/network-diagnostics.log 2>&1 || diagnostics_status=$?
