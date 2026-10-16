@@ -16,6 +16,9 @@ collect_artifacts() {
 finish() {
   local exit_code=$?
   trap - EXIT
+  if [[ "${LUMINA_SMOKE_SHAPER:-emulator}" == host ]]; then
+    bash scripts/android-bandwidth.sh full || true
+  fi
   collect_artifacts
   exit "$exit_code"
 }

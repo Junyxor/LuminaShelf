@@ -14,9 +14,8 @@ javac --release 8 -d "$probe_dir" scripts/AndroidNetworkProbe.java
 "$d8_path" --min-api 24 --lib "$android_jar" --output "$probe_dir" "$probe_dir/AndroidNetworkProbe.class"
 adb push "$probe_dir/classes.dex" /data/local/tmp/lumina-network-probe.dex
 
-curl --fail --retry 2 --max-time 30 'https://gutendex.com/books/?ids=2701' -o "$probe_dir/book.json"
-book_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["results"][0]["formats"]["application/epub+zip"])' "$probe_dir/book.json")"
-[[ "$book_url" == https://www.gutenberg.org/* ]]
+# Fixed public Moby Dick EPUB; avoid a separate host-side metadata/WAF dependency.
+book_url='https://www.gutenberg.org/ebooks/2701.epub3.images'
 adb shell svc wifi disable
 adb shell svc data enable
 adb emu gsm data home || true

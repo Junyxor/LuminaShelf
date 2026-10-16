@@ -37,6 +37,12 @@ on:
         required: false
         type: boolean
         default: false
+      bandwidth_shaper:
+        description: Backend for the real Android slow-download acceptance test
+        required: false
+        type: choice
+        default: host
+        options: [host, emulator]
 
 permissions:
   contents: read
@@ -262,6 +268,7 @@ jobs:
           LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ (inputs.verify_build_run || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && '1' || '0' }}
           LUMINA_SMOKE_APK_VARIANT: ${{ inputs.apk_variant == 'x86_64' && 'x86_64' || 'universal' }}
           LUMINA_RUN_NETWORK_DIAGNOSTICS: ${{ inputs.network_diagnostics && '1' || '0' }}
+          LUMINA_SMOKE_SHAPER: ${{ inputs.bandwidth_shaper || 'host' }}
         with:
           api-level: 35
           arch: x86_64

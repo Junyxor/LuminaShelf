@@ -1,5 +1,6 @@
 """Drive the signed release through Android accessibility; runs only on CI's emulator."""
 import json
+import os
 import re
 import subprocess
 import time
@@ -14,6 +15,16 @@ DISPLAY = [1080, 2400]
 
 def adb(*args, check=True):
     return subprocess.run(["adb", *args], capture_output=True, text=True, timeout=25, check=check).stdout
+
+
+def network_speed(speed, check=True):
+    if os.environ.get("LUMINA_SMOKE_SHAPER") == "host":
+        result = subprocess.run(["bash", "scripts/android-bandwidth.sh", speed], capture_output=True, text=True, timeout=25)
+        if result.returncode and check:
+            (OUT / "host-shaping-error.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+            result.check_returncode()
+        return result.stdout
+    return adb("emu", "network", "speed", speed, check=check)
 
 
 def tree():
@@ -93,7 +104,7 @@ def progress(root):
 
 try:
     DISPLAY = list(map(int, re.findall(r"(\d+)x(\d+)", adb("shell", "wm", "size"))[-1]))
-    # Legacy emulator shaping applies to cellular, not modern netsim Wi-Fi.
+    # Use cellular IPv4 for both the host-kernel and legacy emulator shapers.
     adb("shell", "svc", "wifi", "disable")
     adb("shell", "svc", "data", "enable")
     adb("emu", "gsm", "data", "home", check=False)
@@ -120,7 +131,7 @@ try:
             click_node(cover)
     # Establish an unshaped control before testing a slow transfer. Connection
     # failures must be distinguished from shaping and saved-progress behavior.
-    adb("emu", "network", "speed", "full")
+    network_speed("full")
     click_node(download)
     wait_node(lambda n: n.get("text") == "已完成", 150)
     evidence("download-unshaped-control")
@@ -129,8 +140,9 @@ try:
     click_node(manage)
     restart, _ = wait_node(lambda n: label(n).strip().startswith("从头重新下载"))
     click_node(restart)
-    adb("emu", "network", "speed", "256")
-    (OUT / "network-shaping.txt").write_text(adb("emu", "network", "status") + adb("shell", "dumpsys", "connectivity"), encoding="utf-8")
+    network_speed("256")
+    shaping = network_speed("status") if os.environ.get("LUMINA_SMOKE_SHAPER") == "host" else adb("emu", "network", "status")
+    (OUT / "network-shaping.txt").write_text(shaping + adb("shell", "dumpsys", "connectivity"), encoding="utf-8")
     started = time.monotonic()
     click("重新下载")
     _, root = wait_node(lambda n: byte_progress(label(n)) >= 8192, 240)
@@ -149,7 +161,11 @@ try:
     saved = progress(root)
     assert saved > 0, "No partial bytes saved"
     assert saved > before, "No byte progress while app was in background"
-    assert saved / max(1, time.monotonic() - started) < 64 * 1024, "Emulator cellular shaping did not slow actual HTTP bytes"
+    assert saved / max(1, time.monotonic() - started) < 64 * 1024, "Network shaping did not slow actual HTTP bytes"
+    if os.environ.get("LUMINA_SMOKE_SHAPER") == "host":
+        traffic = network_speed("status")
+        (OUT / "host-shaping-active.txt").write_text(traffic, encoding="utf-8")
+        assert any(int(n) > 0 for n in re.findall(r"Sent (\d+) bytes", traffic)), "No actual traffic passed the host bandwidth limiter"
     evidence("download-paused")
     steps.append({"step": "real HTTPS download, foreground service, background and visible pause", "title": title, "savedBytesRounded": saved, "elapsedSeconds": time.monotonic() - started})
     # Kill the actual signed process, not merely its WebView, to prove SQLite recovery.
@@ -166,7 +182,7 @@ try:
     wait_node(lambda n: "移除下载记录" in label(n), 30)
     evidence("download-long-press")
     click("关闭任务管理")
-    adb("emu", "network", "speed", "full")
+    network_speed("full")
     node, _ = wait_node(lambda n: label(n).strip().startswith("继续下载 ") or n.get("text") == "继续下载")
     click_node(node)
     wait_node(lambda n: n.get("text") == "已完成", 150)
@@ -177,5 +193,5 @@ try:
     evidence("download-reader")
     steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved})
 finally:
-    adb("emu", "network", "speed", "full", check=False)
-    (OUT / "download-smoke.json").write_text(json.dumps({"platform": "signed Android release, headless API35 emulator", "fixture": False, "steps": steps}, ensure_ascii=False, indent=2), encoding="utf-8")
+    network_speed("full", check=False)
+    (OUT / "download-smoke.json").write_text(json.dumps({"platform": "signed Android release, headless API35 emulator", "fixture": False, "bandwidthShaper": os.environ.get("LUMINA_SMOKE_SHAPER", "emulator"), "steps": steps}, ensure_ascii=False, indent=2), encoding="utf-8")
