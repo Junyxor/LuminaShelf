@@ -1,6 +1,6 @@
 # Release validation
 
-## 0.8.0 acceptance work — 2026-10-15
+## 0.8.0 acceptance — 2026-10-16
 
 Target: same application ID/certificate as 0.7, version code 8000, min SDK24,
 target SDK36. Builds provide x86, x86_64 and universal APKs; universal includes
@@ -45,12 +45,27 @@ CI/test/documentation commits. The package job's success does not assert that
 the older acceptance script in that same run passed. Runtime acceptance uses
 the same signed artifacts and updated, independently reviewed test facilities.
 
-Android Kotlin and manifest compilation passed locally. Cloud smoke additionally
-drives the signed release through Android accessibility, shapes the emulator's
-cellular network, verifies real foreground/background byte progress, pauses,
-force-stops the process, confirms persisted bytes, long-presses the task, resumes
-to completion and opens the built-in EPUB reader. The actual CI conclusion and
-downloaded evidence remain authoritative; a defined test is not a passing result.
+Android Kotlin and manifest compilation passed locally. The final signed x86_64
+APK passed [Android35 acceptance](https://github.com/Junyxor/LuminaShelf/actions/runs/38892027698):
+actual public HTTPS download,32,000B/s shared tunnel limit, foreground service,
+background byte progress, visible pause at218,112rounded bytes, force-stop and
+recovery of that progress, actual750ms Android long touch, resume to completion,
+and reading real Moby Dick EPUB text after its cover. Screenshots, XML, service
+state and JSON under `artifacts/testing/v08/android-x64-accepted/` were inspected.
+The tunnel had238,871limited ciphertext bytes at pause; these include TLS overhead
+and are not expected to equal book bytes. No APK instrumentation or TLS bypass
+was used. Physical-device and private-account acceptance remain separate.
+
+The final signed universal APK passed [the same Android35 flow](https://github.com/Junyxor/LuminaShelf/actions/runs/38892023366)
+on its second attempt. The first attempt was blocked before the download test by
+the emulator's system Quickstep ANR, with the app's shelf visible behind the
+system dialog. The successful attempt paused at221,184rounded book bytes after
+8.49seconds; the same progress survived process death, real long touch opened
+management, resume completed and the reader displayed actual EPUB paragraphs.
+The relay recorded238,877limited ciphertext bytes at pause. Evidence under
+`artifacts/testing/v08/android-universal-accepted/` was downloaded and inspected.
+The x86 APK has static signature/ELF/JNI/alignment verification only; no32-bit
+Android runtime was used. The latest PR checks also passed independently.
 
 Review outcomes and fixes are recorded in [0.8 review](docs/release-v08-review.md).
 Private account, cloud/email delivery and external reading applications are not

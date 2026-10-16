@@ -57,3 +57,31 @@ pause while a probe had headers but no body; both paths are now covered.
 A further encoded-response regression failed with three probe requests instead
 of one. Restricting retries to classified transport/timeouts resolves it while
 retaining immediate rejection of encoding and redirect protocol violations.
+
+Further Android controls showed that a longer connection budget and HTTP/1.1
+did not resolve Emulator37's traditional256kbps path: the independent Android
+platform HTTPS client also received0bytes and an unexpected EOF. The final CI
+uses a loopback TCP tunnel with a shared32,000B/s downstream budget and preserves
+the APK's DNS and end-to-end TLS. This is a different controlled network path,
+not a claim that the traditional limiter now works. Exact sources and evidence
+are recorded in `docs/android-shaping-reference.md`.
+
+CI review also closed empty verify-only runs for x86, optional diagnostics
+preventing the actual app test, tunnel half-close truncation, invisible-node
+selection, the sixth chapter boundary and transient snapshot errors killing the
+test bridge. The half-close regression first failed and then passed; two flows
+totaling65,536bytes share the rate budget without changing bytes. The live accessibility bridge
+clears cached nodes before each snapshot so old button coordinates cannot guide
+touches after layout changes. Both review axes accepted these fixes.
+
+The final signed x86_64 artifact passed the entire actual Android flow in
+run38892027698, including background progress, pause, process death, real long
+touch, continuation and actual EPUB paragraphs. This runtime acceptance reuses
+the independently verified signed artifact from the successful three-package
+job38858699264. Application sources are unchanged in subsequent CI/docs commits.
+
+The universal artifact then passed the same complete flow in run38892023366,
+including221,184rounded bytes retained across process death and actual reader
+content. Its initial attempt was blocked before Python by a system Quickstep
+ANR and was rerun without changing the APK or weakening product checks. The x86
+artifact is statically verified, without a32-bit runtime claim.
