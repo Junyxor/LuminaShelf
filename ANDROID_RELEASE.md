@@ -137,7 +137,15 @@ files only on the build runner. Private files are excluded from Git/artifacts an
 removed in the final workflow step. CI refuses to generate a replacement key, and
 release signing verifies the existing public certificate fingerprint.
 
-Run the workflow manually on the desired branch. Keep `publish_prerelease` false
+Run the workflow manually on the desired branch. Choose `apk_variant=all` for
+all three packages, or select `universal`, `x86`
+or `x86_64` for one package. The default remains all three. Independent x86 builds
+receive static verification; universal and x86_64 builds can run the Android test.
+To retest an existing signed artifact, set `verify_build_run` to its Actions run
+ID and keep `android_smoke=true`; select `universal` (or `all`) or `x86_64` to
+match the existing artifact. An x86-only retest is rejected because that emulator
+cannot execute the x86 package.
+Keep `publish_prerelease` false
 for an artifact-only build; turn it on and supply an explicit `v` tag only when
 publishing a prerelease. A pushed `v*` tag publishes a release. The uploaded artifact
 names are `LuminaShelf-signed-universal`, `LuminaShelf-signed-x86` and

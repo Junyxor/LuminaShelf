@@ -108,7 +108,7 @@ impl NetworkClient {
             builder = builder.timeout(timeout);
         }
         if download {
-            builder = builder.no_gzip().no_brotli().no_deflate();
+            builder = builder.http1_only().no_gzip().no_brotli().no_deflate();
         }
         if let Some(proxy) = resolver.proxy_url() {
             builder = builder.proxy(reqwest::Proxy::all(&proxy).context("代理地址无效")?);

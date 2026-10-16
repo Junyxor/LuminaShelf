@@ -32,7 +32,7 @@ def bounds(node):
     return values if len(values) == 4 else [0, 0, 0, 0]
 
 
-def wait_node(predicate, seconds=75, scroll=False):
+def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
     end = time.monotonic() + seconds
     error = ""
     while time.monotonic() < end:
@@ -42,6 +42,8 @@ def wait_node(predicate, seconds=75, scroll=False):
                 box = bounds(node)
                 if predicate(node) and box[2] > box[0] and box[3] > box[1] and (box[1] + box[3]) // 2 < DISPLAY[1]:
                     return node, root
+            if source_metadata and any("书源 HTTPS 连接失败" in label(n) for n in root.iter("node")):
+                raise AssertionError("Source metadata connection failed")
             if any(n.get("text") == "下载中断" for n in root.iter("node")):
                 details = next((n for n in root.iter("node") if n.get("text") == "错误详情"), None)
                 if details is not None:
@@ -104,7 +106,18 @@ try:
     cover, _ = wait_node(lambda n: label(n).strip().startswith("查看 ") and "Moby" in label(n), 100, scroll=True)
     title = label(cover).strip().removeprefix("查看 ")
     click_node(cover)
-    download, _ = wait_node(lambda n: "下载 EPUB" in label(n) and n.get("enabled") == "true", 75, scroll=True)
+    for metadata_attempt in range(3):
+        try:
+            download, _ = wait_node(lambda n: "下载 EPUB" in label(n) and n.get("enabled") == "true", 120, scroll=True, source_metadata=True)
+            break
+        except AssertionError as error:
+            if "Source metadata connection failed" not in str(error) or metadata_attempt == 2:
+                raise
+            evidence("metadata-retry-" + str(metadata_attempt + 1))
+            steps.append({"step": "retry transient source metadata connection", "attempt": metadata_attempt + 1})
+            click("关闭书籍详情")
+            cover, _ = wait_node(lambda n: label(n).strip().startswith("查看 ") and "Moby" in label(n), 45, scroll=True)
+            click_node(cover)
     # Establish an unshaped control before testing a slow transfer. Connection
     # failures must be distinguished from shaping and saved-progress behavior.
     adb("emu", "network", "speed", "full")

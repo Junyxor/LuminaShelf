@@ -21,7 +21,9 @@ finish() {
 }
 trap finish EXIT
 
-apk_path="$(find package -name '*-universal-release.apk' -type f -print -quit)"
+apk_variant="${LUMINA_SMOKE_APK_VARIANT:-universal}"
+case "$apk_variant" in universal|x86_64) ;; *) exit 1 ;; esac
+apk_path="$(find package -name "*-${apk_variant}-release.apk" -type f -print -quit)"
 test -n "$apk_path"
 adb install -r "$apk_path"
 adb logcat -c

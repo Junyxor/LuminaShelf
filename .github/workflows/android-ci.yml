@@ -22,26 +22,54 @@ on:
         type: boolean
         default: true
       verify_build_run:
-        description: Verify an existing signed universal artifact without rebuilding (Actions run ID)
+        description: Test an existing universal or x86_64 artifact without rebuilding (Actions run ID)
         required: false
         type: string
         default: ""
+      apk_variant:
+        description: APK variants to build (all produces three separately signed packages)
+        required: false
+        type: choice
+        default: all
+        options: [all, universal, x86, x86_64]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: android-${{ github.head_ref || github.ref }}-${{ inputs.verify_build_run && 'verify' || 'build' }}
+  group: android-${{ github.head_ref || github.ref }}-${{ inputs.verify_build_run && 'verify' || 'build' }}-${{ inputs.apk_variant || 'all' }}
   cancel-in-progress: true
 
 env:
   CARGO_BUILD_JOBS: "2"
   JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2"
+  LUMINA_APK_VARIANT: ${{ inputs.apk_variant || 'all' }}
 
 jobs:
+  validate-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate requested verification
+        env:
+          VERIFY_BUILD_RUN: ${{ inputs.verify_build_run }}
+          ANDROID_SMOKE: ${{ inputs.android_smoke }}
+        run: |
+          if [[ -n "$VERIFY_BUILD_RUN" ]]; then
+            if [[ ! "$VERIFY_BUILD_RUN" =~ ^[0-9]+$ ]]; then
+              echo '::error::verify_build_run must be a numeric Actions run ID.'
+              exit 1
+            fi
+            if [[ "$LUMINA_APK_VARIANT" == 'x86' || "$ANDROID_SMOKE" != 'true' ]]; then
+              echo '::error::Existing-artifact verification requires android_smoke=true and a universal or x86_64 APK.'
+              exit 1
+            fi
+          fi
+
   checks:
     if: ${{ !inputs.verify_build_run }}
+    needs: validate-inputs
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -116,22 +144,27 @@ jobs:
           LUMINASHELF_ANDROID_STORE_PASSWORD: ${{ secrets.LUMINASHELF_ANDROID_STORE_PASSWORD }}
           LUMINASHELF_ANDROID_KEY_ALIAS: ${{ secrets.LUMINASHELF_ANDROID_KEY_ALIAS }}
         run: node scripts/restore-signing.mjs
-      - name: Build and verify signed universal, x86 and x86_64 APKs
+      - name: Build and verify selected signed APK variants
         shell: pwsh
         run: |
           $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
-          npm run android:release
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/verify-apk.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run android:release -- i686
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/verify-apk.ps1 -Variant x86
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run android:release -- x86_64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/verify-apk.ps1 -Variant x86_64
+          $selectedVariants = @('universal', 'x86', 'x86_64')
+          if ($env:LUMINA_APK_VARIANT -ne 'all') {
+            if ($env:LUMINA_APK_VARIANT -notin $selectedVariants) { throw 'Unknown APK variant' }
+            $selectedVariants = @($env:LUMINA_APK_VARIANT)
+          }
+          foreach ($variantName in $selectedVariants) {
+            switch ($variantName) {
+              'universal' { npm run android:release }
+              'x86' { npm run android:release -- i686 }
+              'x86_64' { npm run android:release -- x86_64 }
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ./scripts/verify-apk.ps1 -Variant $variantName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Upload signed APK and public verification data
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'universal'
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-signed-universal
@@ -143,6 +176,7 @@ jobs:
             artifacts/android/universal-apk-verification.json
           if-no-files-found: error
       - name: Upload signed x86 APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'x86'
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-signed-x86
@@ -154,6 +188,7 @@ jobs:
             artifacts/android/x86-apk-verification.json
           if-no-files-found: error
       - name: Upload signed x86_64 APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: LuminaShelf-signed-x86_64
@@ -195,20 +230,20 @@ jobs:
           if (Test-Path -LiteralPath artifacts/android/universal-build-info.json) { Get-Content -LiteralPath artifacts/android/universal-build-info.json }
 
   android-smoke:
-    if: always() && github.event_name != 'pull_request' && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
-    needs: package
+    if: always() && needs.validate-inputs.result == 'success' && github.event_name != 'pull_request' && inputs.apk_variant != 'x86' && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
+    needs: [validate-inputs, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: LuminaShelf-signed-universal
+          name: ${{ inputs.apk_variant == 'x86_64' && 'LuminaShelf-signed-x86_64' || 'LuminaShelf-signed-universal' }}
           path: package
           run-id: ${{ inputs.verify_build_run || github.run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
-        if: ${{ !inputs.verify_build_run }}
+        if: ${{ !inputs.verify_build_run && inputs.apk_variant != 'universal' && inputs.apk_variant != 'x86_64' }}
         with:
           name: LuminaShelf-signed-x86_64
           path: package/x86_64
@@ -219,7 +254,8 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
         env:
-          LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ inputs.verify_build_run && '1' || '0' }}
+          LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ (inputs.verify_build_run || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && '1' || '0' }}
+          LUMINA_SMOKE_APK_VARIANT: ${{ inputs.apk_variant == 'x86_64' && 'x86_64' || 'universal' }}
         with:
           api-level: 35
           arch: x86_64
