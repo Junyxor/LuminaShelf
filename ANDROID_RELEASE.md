@@ -125,6 +125,19 @@ The emulator action invokes one standalone shell script
 so APK path variables survive between commands. A launch check does not substitute for
 account, reader-file, sharing and document-provider acceptance on real devices.
 
+Slow-transfer acceptance defaults to `bandwidth_shaper=proxy`: a relay bound to
+the cloud runner's loopback forwards the emulator's TCP traffic, sharing a
+32,000-byte/second downstream budget across connections. TLS remains between the
+APK and the source; the relay does not decrypt book requests or install a CA.
+Byte counters and actual app progress verify that shaping took effect. The
+`host` and `emulator` backends remain available for diagnostics; their observed
+limitations are recorded in `docs/android-shaping-reference.md`.
+An independent shell accessibility bridge stays connected throughout the test
+and reads visible nodes without waiting for continuous progress updates to stop.
+Each snapshot clears stale system accessibility nodes before reading coordinates.
+It is compiled only for the cloud test, never included in the APK. The normal
+workflow runs a regression for shared rate, unchanged bytes and TCP half-close.
+
 The following repository Actions Secrets hold the existing release identity:
 
 - `LUMINASHELF_ANDROID_KEYSTORE`: base64-encoded PKCS#12 keystore.

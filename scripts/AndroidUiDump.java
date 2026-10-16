@@ -36,6 +36,7 @@ public final class AndroidUiDump {
     }
 
     private static byte[] snapshot(UiAutomation automation) throws Exception {
+        automation.clearCache();
         AccessibilityNodeInfo root = null;
         for (int attempt = 0; attempt < 20 && root == null; attempt++) {
             root = automation.getRootInActiveWindow();

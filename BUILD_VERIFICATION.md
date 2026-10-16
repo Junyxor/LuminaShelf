@@ -30,6 +30,21 @@ Pause/progress/settings survive reload; visible task buttons are at least48px.
 Hidden native and signed-Android smoke results are recorded separately under
 `artifacts/testing/v08/` and the Actions artifacts; they are not fixture claims.
 
+The [signed package job](https://github.com/Junyxor/LuminaShelf/actions/runs/38858699264/job/116837069260)
+built all three APKs from `86e21d7fb287e8f6a830de4c0a495a64262e1699` on
+2026-10-16. The checks job passed66core and10bridge tests, Clippy and all four UI
+widths. Downloads under `artifacts/android/ci-v08-release/` were independently
+verified with `scripts/verify-apk.ps1` against that exact source revision:
+
+- Universal,64,877,565bytes: `9388103d5ec267598a8c0aadcfb1380314c96d871b7fa1501ab5514e6dd31454`.
+- x86,20,013,820bytes: `2ee272ccfe361adacf3e4f3cf9cdbf9fae4094012e1f1d8a6afbd55241cecbf3`.
+- x86_64,20,165,375bytes: `9040586018cc3bd773f503146eb0e804192cd2bbc1d8a2946687c696afd53334`.
+
+Application inputs and Android build/signing scripts are unchanged in subsequent
+CI/test/documentation commits. The package job's success does not assert that
+the older acceptance script in that same run passed. Runtime acceptance uses
+the same signed artifacts and updated, independently reviewed test facilities.
+
 Android Kotlin and manifest compilation passed locally. Cloud smoke additionally
 drives the signed release through Android accessibility, shapes the emulator's
 cellular network, verifies real foreground/background byte progress, pauses,
