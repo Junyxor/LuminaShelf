@@ -27,11 +27,11 @@ on:
         type: string
         default: ""
       apk_variant:
-        description: APK variants to build (all produces three separately signed packages)
+        description: APK variants (ARM64 recommended for phones; x86/x86_64 for Intel/AMD)
         required: false
         type: choice
         default: all
-        options: [all, universal, x86, x86_64]
+        options: [all, arm64-v8a, armeabi-v7a, universal, x86, x86_64]
       network_diagnostics:
         description: Capture an independent Android platform TLS control under bandwidth shaping
         required: false
@@ -66,14 +66,22 @@ jobs:
         env:
           VERIFY_BUILD_RUN: ${{ inputs.verify_build_run }}
           ANDROID_SMOKE: ${{ inputs.android_smoke }}
+          PUBLISH_PRERELEASE: ${{ inputs.publish_prerelease }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           if [[ -n "$VERIFY_BUILD_RUN" ]]; then
             if [[ ! "$VERIFY_BUILD_RUN" =~ ^[0-9]+$ ]]; then
               echo '::error::verify_build_run must be a numeric Actions run ID.'
               exit 1
             fi
-            if [[ "$LUMINA_APK_VARIANT" == 'x86' || "$ANDROID_SMOKE" != 'true' ]]; then
+            if [[ ! "$LUMINA_APK_VARIANT" =~ ^(all|universal|x86_64)$ || "$ANDROID_SMOKE" != 'true' ]]; then
               echo '::error::Existing-artifact verification requires android_smoke=true and a universal or x86_64 APK.'
+              exit 1
+            fi
+          fi
+          if [[ "$PUBLISH_PRERELEASE" == 'true' ]]; then
+            if [[ -n "$VERIFY_BUILD_RUN" || "$LUMINA_APK_VARIANT" != 'all' || "$ANDROID_SMOKE" != 'true' || ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo '::error::Publishing requires a version tag, a new build of all variants, and android_smoke=true.'
               exit 1
             fi
           fi
@@ -116,8 +124,6 @@ jobs:
     timeout-minutes: 100
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -160,13 +166,15 @@ jobs:
         shell: pwsh
         run: |
           $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
-          $selectedVariants = @('universal', 'x86', 'x86_64')
+          $selectedVariants = @('arm64-v8a', 'armeabi-v7a', 'universal', 'x86', 'x86_64')
           if ($env:LUMINA_APK_VARIANT -ne 'all') {
             if ($env:LUMINA_APK_VARIANT -notin $selectedVariants) { throw 'Unknown APK variant' }
             $selectedVariants = @($env:LUMINA_APK_VARIANT)
           }
           foreach ($variantName in $selectedVariants) {
             switch ($variantName) {
+              'arm64-v8a' { npm run android:release -- aarch64 }
+              'armeabi-v7a' { npm run android:release -- armv7 }
               'universal' { npm run android:release }
               'x86' { npm run android:release -- i686 }
               'x86_64' { npm run android:release -- x86_64 }
@@ -175,6 +183,30 @@ jobs:
             ./scripts/verify-apk.ps1 -Variant $variantName
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Upload signed ARM64 phone APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'arm64-v8a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-arm64-v8a
+          path: |
+            artifacts/android/*-arm64-v8a-release.apk
+            artifacts/android/*-arm64-v8a-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/arm64-v8a-build-info.json
+            artifacts/android/arm64-v8a-apk-verification.json
+          if-no-files-found: error
+      - name: Upload signed ARMv7 phone APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'armeabi-v7a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-armeabi-v7a
+          path: |
+            artifacts/android/*-armeabi-v7a-release.apk
+            artifacts/android/*-armeabi-v7a-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/armeabi-v7a-build-info.json
+            artifacts/android/armeabi-v7a-apk-verification.json
+          if-no-files-found: error
       - name: Upload signed APK and public verification data
         if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'universal'
         uses: actions/upload-artifact@v4
@@ -211,20 +243,6 @@ jobs:
             artifacts/android/x86_64-build-info.json
             artifacts/android/x86_64-apk-verification.json
           if-no-files-found: error
-      - name: Publish an explicitly requested release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: pwsh
-        run: |
-          if (-not $env:RELEASE_TAG.StartsWith('v')) { throw 'Publishing requires a v-prefixed version tag.' }
-          $assets = Get-ChildItem artifacts/android/*-release.apk,artifacts/android/*.apk.sha256,artifacts/android/release-certificate.pem | ForEach-Object FullName
-          $releaseArguments = @('release','create',$env:RELEASE_TAG,'--target',$env:GITHUB_SHA,'--title',"LuminaShelf $env:RELEASE_TAG",'--generate-notes')
-          if ($env:PRERELEASE -eq 'true') { $releaseArguments += '--prerelease' }
-          & gh @releaseArguments @assets
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Remove restored private signing material
         if: always()
         shell: pwsh
@@ -242,7 +260,7 @@ jobs:
           if (Test-Path -LiteralPath artifacts/android/universal-build-info.json) { Get-Content -LiteralPath artifacts/android/universal-build-info.json }
 
   android-smoke:
-    if: always() && needs.validate-inputs.result == 'success' && github.event_name != 'pull_request' && inputs.apk_variant != 'x86' && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
+    if: always() && needs.validate-inputs.result == 'success' && github.event_name != 'pull_request' && (!inputs.apk_variant || inputs.apk_variant == 'all' || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
     needs: [validate-inputs, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -294,3 +312,52 @@ jobs:
           name: Android-release-smoke
           path: smoke/
           if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
+    needs: [package, android-smoke]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: LuminaShelf-signed-*
+          path: release-assets
+      - name: Publish verified Android packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Release tag must match the application version.' }
+          $notes = "docs/releases/$env:RELEASE_TAG.md"
+          if (-not (Test-Path -LiteralPath $notes)) { throw 'Short release notes are required.' }
+          $labels = [ordered]@{
+            'arm64-v8a' = '手机 64 位 · ARM64（推荐）'
+            'armeabi-v7a' = '旧手机 32 位 · ARMv7'
+            'universal' = '通用版'
+            'x86' = 'Intel/AMD 与模拟器 · x86'
+            'x86_64' = 'Intel/AMD 与模拟器 · x86_64'
+          }
+          $assets = @()
+          $checksums = @()
+          foreach ($variant in $labels.Keys) {
+            $directory = "release-assets/LuminaShelf-signed-$variant"
+            $apk = Join-Path $directory "LuminaShelf-$version-$variant-release.apk"
+            $report = Get-Content (Join-Path $directory "$variant-apk-verification.json") -Raw | ConvertFrom-Json
+            $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+            if (-not $report.passed -or $report.variant -ne $variant -or $report.version -ne $version -or $report.sourceCommit -ne $env:GITHUB_SHA -or $report.sha256 -ne $hash -or -not $report.compressedNativeLibs -or -not $report.extractNativeLibs) { throw "Unverified release package: $variant" }
+            $assets += "$apk#$($labels[$variant])"
+            $checksums += "$hash  $([IO.Path]::GetFileName($apk))"
+          }
+          $checksums | Set-Content -LiteralPath release-assets/SHA256SUMS -Encoding utf8NoBOM
+          $assets += 'release-assets/SHA256SUMS'
+          $releaseArguments = @('release','create',$env:RELEASE_TAG,'--target',$env:GITHUB_SHA,'--title',"星书 $env:RELEASE_TAG",'--notes-file',$notes)
+          if ($env:PRERELEASE -eq 'true') { $releaseArguments += '--prerelease' }
+          & gh @releaseArguments @assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

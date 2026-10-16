@@ -2524,7 +2524,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lumina-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "lumina-shelf-desktop"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "futures",
  "jni 0.21.1",
