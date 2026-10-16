@@ -43,6 +43,20 @@
 
 本次访问 android.googlesource 当前分支及上述 Google Issue Tracker 详情超时；搜索工具亦不可用。因此没有声称核对 37.2.12 的精确源码或关联缺陷详情。可用的一手证据为当前 Android 官方发布/控制台文档与明确固定的旧 AOSP 源码。旧源码用于解释机制和设计实验，不作为当前版本已确认漏洞或故障根因的证明。
 
+## 补充：宿主回环 HTTP CONNECT relay 可作为独立限速路径
+
+主任务新增运行证据：宿主 `tc` 的 pref 321 规则没有命中，原 `clsact` 已存在 pref 1 direct-action BPF `tc_ingress_traffic`；不调整、替换或插队该规则。应用全速约一秒下载完成后前台服务正常退出，稍后检查服务存在性的断言失败，不能据此判为产品 FGS 故障。替代方案应使传输真正持续足够时间后再检查服务，而不是让服务空转迎合断言。
+
+**当前 Android 官方文档支持在模拟器启动时配置 `-http-proxy http://127.0.0.1:18888`。**这是 Emulator Proxy，在 Android OS 以下的网络层转发全部 TCP，不依赖应用是否遵循 Android 系统 HTTP 代理设置，因此覆盖 guest 内 Rust reqwest、原始 TCP/TLS 和 `HttpsURLConnection` 的 HTTPS/TCP 请求。官方明确 HTTPS 通过未解密 TCP 隧道传递，不能用它做 SSL inspection；不支持 UDP 重定向。无需安装 CA、关闭 TLS 校验、申请 VPN 或弹出应用授权。`127.0.0.1` 在这个参数中属于宿主 emulator 进程地址空间；与 emulator 同一宿主/网络命名空间中的 relay 可仅绑定回环。参数在启动时使用，不要求重编签名 APK。[官方命令行参数](https://developer.android.google.cn/studio/run/emulator-commandline?hl=en#network) · [官方明确区分 Emulator Proxy / Android System Proxy](https://developer.android.google.cn/studio/run/emulator-networking-proxy?hl=en)
+
+已核对的旧 AOSP CONNECT 实现用 `sock_address_to_string(&root->address, ...)` 生成请求行，再连接配置的代理地址；`root->address` 来自待连接 socket 地址，而不是原始 URL。因此应预期 **CONNECT authority 为已经解析的数值 IP:port**，不能依赖收到原始书源域名。relay 需按首行 authority 解析 IPv4/IPv6 地址及端口、连接原目标；不进行反向 DNS 替换。这个具体编码结论来自固定旧源码，37.2.12 应通过实际 relay 首行记录核实。[保存目标 socket 地址](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_common.c#L62-L88) · [CONNECT 请求与代理连接](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_http_connector.c#L48-L79)
+
+这一路径保留“guest 先解析目标，再请求 TCP 连接”的行为，而不是将普通目标域名交给 relay 解析。UDP DNS 不在 TCP 代理覆盖范围；应用自有 DoH 仍是 HTTPS/TCP 隧道，DoT 仍是 TCP 隧道。relay 只转发字节时，原 guest TLS ClientHello/SNI、证书链和主机名验证仍属于 guest 与源服务器之间的端到端 TLS，不需要 relay 知道 HTTP Host 或下载 URL。它改变了宿主侧建连路径，**不能称为完全相同的 TCP 链路**，但保留了实际 APK 的请求、DNS策略和 TLS验证；用于验收时应明确记录该替代网络环境。[官方 TCP 隧道与 UDP 边界](https://developer.android.google.cn/studio/run/emulator-networking-proxy?hl=en) · [只接受 TCP socket](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_http.c#L32-L64)
+
+relay 接入注意事项：旧实现 CONNECT 生成过程不保证额外 `Host` 头，不能要求 Host 才接受隧道；应以请求行 authority 为准。在上游连接成功后返回合法的 2xx CONNECT 响应和头结束空行，再按序双向原样转发所有后续字节，保留 EOF/半关闭语义，不自行生成 TLS 记录。旧 QEMU AUTO 对目标 80 端口使用 HTTP rewriter，其余端口使用 CONNECT；因此 **CONNECT-only relay 适用于本次 HTTPS 测试，但不是完整的通用 HTTP 代理**。普通 HTTP/Android 网络连通性探测若经过此路径，需支持正常 HTTP 转发或至少记录拒绝情况，避免把代理能力缺口当作应用故障。[CONNECT 请求/响应处理](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_http_connector.c#L58-L62) · [响应 2xx 与头结束](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_http_connector.c#L118-L150) · [80 端口特殊路径](https://github.com/aosp-mirror/platform_external_qemu/blob/ae9d18d2b6261179fbd57fffec720a04f7bfb053/android/emu/proxy/src/android/proxy/proxy_http.c#L49-L64)
+
+该方案无需任何 `tc`/BPF 规则变更：保持 legacy `network speed full`，仅在宿主 loopback relay 对所有隧道的**共享下行密文字节**实行约 32 KB/s 预算，上行正常转发以减少 ACK/ClientHello 的人为干扰；若目标是双向共享总预算，须另外明确，不能把每连接 32 KB/s 误报为全局限速。relay 的计数字节含 TLS 开销，不能与 APK 正文进度直接要求完全相等。先用同一目标做 relay 不限速对照，确认平台客户端与 APK 都能完整读取，再启用预算；记录 CONNECT 目标、已转发字节与时间，观察实际应用进度/服务状态，暂停、后台、继续后校验完整书籍。这样获得的是有独立吞吐证据的替代限速验收，不是对旧 shaper 正常工作的证明。此段是基于已核对代理机制的实验设计，本次未运行 relay 或宣称测试通过。
+
 ## 实验设施与首轮执行边界
 
 工作流可选 `network_diagnostics` 编译一个独立 Android 平台 TLS 探针，在同一 guest 对公开 Moby EPUB 分别执行单字节 Range 探测和整本下载，记录 HTTP 状态、Content-Range、字节、SHA-256 和耗时。首轮运行 `38857754038` 的宿主 Gutendex 元数据请求遭 HTTP403，平台探针尚未执行；可选诊断失败被记录，原 APP 验收仍执行并在传统限速下失败。不能将这轮结果表述成平台 TLS 同样失败。随后去掉元数据依赖，固定官方 API 刚核对的公开 EPUB 地址。

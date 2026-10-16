@@ -18,6 +18,8 @@ def adb(*args, check=True):
 
 
 def network_speed(speed, check=True):
+    if os.environ.get("LUMINA_SMOKE_SHAPER") == "proxy":
+        return subprocess.run(["python3", "scripts/android-proxy.py", speed], capture_output=True, text=True, timeout=10, check=check).stdout
     if os.environ.get("LUMINA_SMOKE_SHAPER") == "host":
         result = subprocess.run(["bash", "scripts/android-bandwidth.sh", speed], capture_output=True, text=True, timeout=25)
         if result.returncode and check:
@@ -141,7 +143,7 @@ try:
     restart, _ = wait_node(lambda n: label(n).strip().startswith("从头重新下载"))
     click_node(restart)
     network_speed("256")
-    shaping = network_speed("status") if os.environ.get("LUMINA_SMOKE_SHAPER") == "host" else adb("emu", "network", "status")
+    shaping = network_speed("status") if os.environ.get("LUMINA_SMOKE_SHAPER") in ["host", "proxy"] else adb("emu", "network", "status")
     (OUT / "network-shaping.txt").write_text(shaping + adb("shell", "dumpsys", "connectivity"), encoding="utf-8")
     started = time.monotonic()
     click("重新下载")
@@ -166,6 +168,10 @@ try:
         traffic = network_speed("status")
         (OUT / "host-shaping-active.txt").write_text(traffic, encoding="utf-8")
         assert any(int(n) > 0 for n in re.findall(r"Sent (\d+) bytes", traffic)), "No actual traffic passed the host bandwidth limiter"
+    if os.environ.get("LUMINA_SMOKE_SHAPER") == "proxy":
+        traffic = json.loads(network_speed("status"))
+        (OUT / "proxy-shaping-active.json").write_text(json.dumps(traffic), encoding="utf-8")
+        assert traffic["limitedBytes"] > 0, "No actual bytes passed the limited HTTPS tunnel"
     evidence("download-paused")
     steps.append({"step": "real HTTPS download, foreground service, background and visible pause", "title": title, "savedBytesRounded": saved, "elapsedSeconds": time.monotonic() - started})
     # Kill the actual signed process, not merely its WebView, to prove SQLite recovery.

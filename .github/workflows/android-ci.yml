@@ -41,8 +41,8 @@ on:
         description: Backend for the real Android slow-download acceptance test
         required: false
         type: choice
-        default: host
-        options: [host, emulator]
+        default: proxy
+        options: [proxy, host, emulator]
 
 permissions:
   contents: read
@@ -98,6 +98,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --lib --locked
       - run: cargo clippy -p lumina-core --all-targets --locked -- -D warnings
+      - run: python scripts/check-android-proxy.py
       - name: Install headless UI test browser
         run: npx playwright install chromium
       - run: npm run test:ui
@@ -263,18 +264,29 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Start local TLS tunnel control
+        if: ${{ !inputs.bandwidth_shaper || inputs.bandwidth_shaper == 'proxy' }}
+        run: |
+          mkdir -p smoke
+          python3 scripts/android-proxy.py serve > smoke/network-proxy.log 2>&1 &
+          echo $! > smoke/network-proxy.pid
+          for attempt in {1..20}; do
+            if test -f smoke/network-proxy/ready; then break; fi
+            sleep 0.25
+          done
+          test -f smoke/network-proxy/ready
       - uses: reactivecircus/android-emulator-runner@v2
         env:
           LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ (inputs.verify_build_run || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && '1' || '0' }}
           LUMINA_SMOKE_APK_VARIANT: ${{ inputs.apk_variant == 'x86_64' && 'x86_64' || 'universal' }}
           LUMINA_RUN_NETWORK_DIAGNOSTICS: ${{ inputs.network_diagnostics && '1' || '0' }}
-          LUMINA_SMOKE_SHAPER: ${{ inputs.bandwidth_shaper || 'host' }}
+          LUMINA_SMOKE_SHAPER: ${{ inputs.bandwidth_shaper || 'proxy' }}
         with:
           api-level: 35
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -cores 2 -memory 2048
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -cores 2 -memory 2048 ${{ (!inputs.bandwidth_shaper || inputs.bandwidth_shaper == 'proxy') && '-http-proxy http://127.0.0.1:18888' || '' }}
           script: bash scripts/android-smoke.sh
       - uses: actions/upload-artifact@v4
         if: always()

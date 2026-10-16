@@ -19,6 +19,9 @@ finish() {
   if [[ "${LUMINA_SMOKE_SHAPER:-emulator}" == host ]]; then
     bash scripts/android-bandwidth.sh full || true
   fi
+  if [[ "${LUMINA_SMOKE_SHAPER:-emulator}" == proxy ]]; then
+    python3 scripts/android-proxy.py full || true
+  fi
   collect_artifacts
   exit "$exit_code"
 }
