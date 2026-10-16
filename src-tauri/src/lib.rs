@@ -1,14 +1,20 @@
+mod announcement_commands;
+mod download_commands;
+mod imports;
+mod library_commands;
+mod network_commands;
 mod pdf;
 mod reader_bridge;
+mod source_commands;
 
+use lumina_core::network::NetworkClient;
 use lumina_core::{
-    download::{DownloadConfig, DownloadProgress, SegmentedDownloader},
+    download::DownloadManager,
     library::{now_unix_ms, scan_folder},
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
-    ProviderRegistry, ReadingProgress, ReqwestResolver, ResolveResult, ResolverPolicy, SearchQuery,
-    SearchResult, StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    ProviderRegistry, ReadingProgress, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
+    StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
 };
-use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -22,10 +28,12 @@ use tokio::sync::RwLock;
 use url::Url;
 
 const ZLIBRARY_CANDIDATES: &[&str] = &[
+    "https://zlib.bz",
+    "https://z-library.sk",
+    "https://1lib.sk",
     "https://z-lib.gd",
     "https://z-lib.gl",
     "https://z-library.ec",
-    "https://zlib.bz",
     "https://article.sk",
     "https://articles.sk",
 ];
@@ -36,9 +44,11 @@ struct AppState {
     resolver_policy_path: PathBuf,
     state_store: StateStore,
     zlibrary: Arc<ZLibraryProvider>,
-    zlibrary_probe: Client,
+    zlibrary_probe: NetworkClient,
     zlibrary_config: RwLock<ZLibraryConfig>,
     zlibrary_config_path: PathBuf,
+    book_dir: PathBuf,
+    downloads: DownloadManager,
 }
 
 impl AppState {
@@ -79,19 +89,19 @@ impl AppState {
         );
         providers.register_shared(zlibrary.clone());
 
-        let zlibrary_probe = Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(4)
-            .tcp_nodelay(true)
-            .redirect(Policy::limited(4))
-            .user_agent("LuminaShelf/0.5 zlibrary-health")
-            .dns_resolver(Arc::new(ReqwestResolver::new(resolver.clone())))
-            .build()
-            .map_err(|error| error.to_string())?;
+        let zlibrary_probe = NetworkClient::new(
+            resolver.clone(),
+            "LuminaShelf/0.6 connection",
+            Some(Duration::from_secs(12)),
+        )
+        .map_err(|error| error.to_string())?;
 
+        let downloads =
+            DownloadManager::new(state_store.clone(), providers.clone(), resolver.clone())
+                .map_err(|error| error.to_string())?;
         Ok(Self {
+            downloads,
+            book_dir: config_dir.join("books"),
             resolver,
             providers,
             resolver_policy_path,
@@ -323,7 +333,7 @@ async fn search_books(
             },
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -336,7 +346,7 @@ async fn book_details(
         .providers
         .details(&provider_id, &book_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -413,79 +423,16 @@ async fn download_book(
     format: BookFormat,
     download_dir: Option<String>,
 ) -> Result<DownloadReceipt, String> {
-    let url = state
-        .providers
-        .acquisition_url(&provider_id, &book_id, format)
-        .await
-        .map_err(|error| error.to_string())?;
-    let headers = state
-        .providers
-        .download_headers(&provider_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let system_download_dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| error.to_string())?;
-    let destination_dir = download_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| system_download_dir.join("LuminaShelf"));
-    let destination = resumable_destination(
-        &destination_dir,
-        &title,
-        format.extension(),
-        &provider_id,
-        &book_id,
-    );
-    let downloader =
-        SegmentedDownloader::with_resolver(state.resolver.clone(), DownloadConfig::default())
-            .map_err(|error| error.to_string())?;
-    let (tx, mut rx) = tokio::sync::watch::channel(DownloadProgress::default());
-
-    let progress_app = app.clone();
-    let progress_provider = provider_id.clone();
-    let progress_book = book_id.clone();
-    let monitor = tauri::async_runtime::spawn(async move {
-        while rx.changed().await.is_ok() {
-            let progress = *rx.borrow_and_update();
-            let _ = progress_app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    provider_id: progress_provider.clone(),
-                    book_id: progress_book.clone(),
-                    downloaded_bytes: progress.downloaded_bytes,
-                    total_bytes: progress.total_bytes,
-                },
-            );
-        }
-    });
-
-    let result = downloader
-        .download_to_with_context(
-            url,
-            destination.clone(),
-            headers,
-            Some(format!("{provider_id}:{book_id}")),
-            tx,
-        )
-        .await;
-    let _ = monitor.await;
-    result.map_err(|error| error.to_string())?;
-
-    let item = LibraryItem::inspect(&destination, Some(&title), Some(provider_id), Some(book_id))
-        .map_err(|error| error.to_string())?;
-    state
-        .state_store
-        .upsert_library_item(&item)
-        .map_err(|error| error.to_string())?;
-    Ok(DownloadReceipt {
-        path: destination,
-        item,
-    })
+    download_commands::legacy_receipt(
+        app,
+        state,
+        provider_id,
+        book_id,
+        title,
+        format,
+        download_dir,
+    )
+    .await
 }
 
 async fn zlibrary_account_status(state: &AppState) -> ZLibraryAccountStatus {
@@ -507,6 +454,7 @@ async fn select_automatic_zlibrary_origin(state: &AppState) -> Result<Url, Strin
 
     let mut seen = HashSet::new();
     let mut failures = Vec::new();
+    let mut origins = Vec::new();
     for candidate in candidates {
         let Ok(origin) = normalize_origin(&candidate) else {
             continue;
@@ -515,7 +463,18 @@ async fn select_automatic_zlibrary_origin(state: &AppState) -> Result<Url, Strin
         if !seen.insert(key.clone()) {
             continue;
         }
-        match probe_zlibrary_origin(state, &origin).await {
+        origins.push(origin);
+    }
+    use futures::{stream, StreamExt};
+    let probes = stream::iter(origins)
+        .map(|origin| async move {
+            let result = probe_zlibrary_origin(state, &origin).await;
+            (origin, result)
+        })
+        .buffer_unordered(2);
+    tokio::pin!(probes);
+    while let Some((origin, result)) = probes.next().await {
+        match result {
             Ok(()) => return Ok(origin),
             Err(error) => failures.push(format!("{}: {error}", origin.host_str().unwrap_or("?"))),
         }
@@ -533,6 +492,8 @@ async fn probe_zlibrary_origin(state: &AppState, origin: &Url) -> Result<(), Str
         .map_err(|error| format!("build EAPI probe URL: {error}"))?;
     let response = state
         .zlibrary_probe
+        .client()
+        .map_err(|error| format!("{error:#}"))?
         .get(endpoint)
         .header("accept", "application/json")
         .send()
@@ -548,15 +509,17 @@ async fn probe_zlibrary_origin(state: &AppState, origin: &Url) -> Result<(), Str
         .map_err(|error| format!("read EAPI probe: {error}"))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| format!("expected EAPI JSON, received non-JSON HTTP {status}"))?;
-    if value.is_null() {
-        return Err("EAPI probe returned an empty JSON value".to_string());
-    }
+    source_commands::parse_directory(&value)?;
     Ok(())
 }
 
 fn normalize_origin(value: &str) -> Result<Url, String> {
     let mut url = Url::parse(value).map_err(|error| format!("invalid EAPI origin: {error}"))?;
-    if url.scheme() != "https" || url.host_str().is_none() {
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return Err("EAPI origin must be an HTTPS host".to_string());
     }
     url.set_path("/");
@@ -599,6 +562,7 @@ fn save_zlibrary_config(path: &Path, config: &ZLibraryConfig) -> Result<(), Stri
     fs::write(path, bytes).map_err(|error| format!("write Z-Library config: {error}"))
 }
 
+#[cfg(test)]
 fn resumable_destination(
     directory: &Path,
     title: &str,
@@ -606,11 +570,7 @@ fn resumable_destination(
     provider_id: &str,
     book_id: &str,
 ) -> PathBuf {
-    let title = sanitize_filename(title);
-    let title = title.chars().take(80).collect::<String>();
-    let identity = sanitize_filename(&format!("{provider_id}-{book_id}"));
-    let identity = identity.chars().take(36).collect::<String>();
-    directory.join(format!("{title} [{identity}].{extension}"))
+    lumina_core::download::destination_for(directory, title, extension, provider_id, book_id)
 }
 
 fn sanitize_filename(value: &str) -> String {
@@ -656,20 +616,68 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(download_commands::plugin())
         .setup(|app| {
             let config_dir = app
                 .path()
                 .app_config_dir()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            #[cfg(debug_assertions)]
+            let config_dir = std::env::var_os("LUMINA_QA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or(config_dir);
             let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
+            download_commands::observe(app.handle().clone(), state.downloads.clone());
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             core_status,
+            download_commands::download_tasks,
+            download_commands::enqueue_download_book,
+            download_commands::pause_download,
+            download_commands::resume_download,
+            download_commands::cancel_download,
+            download_commands::restart_download,
+            download_commands::remove_download,
+            download_commands::pause_all_downloads,
+            download_commands::download_settings,
+            download_commands::save_download_settings,
+            announcement_commands::announcement_feeds,
+            announcement_commands::check_app_update,
+            announcement_commands::open_announcement_link,
             provider_descriptors,
             resolver_policy,
             set_resolver_policy,
+            network_commands::test_network,
+            network_commands::dns_profiles,
+            network_commands::save_dns_profile,
+            network_commands::remove_dns_profile,
+            network_commands::apply_dns_profile,
+            network_commands::optimize_network,
+            network_commands::book_cover_bytes,
+            library_commands::favorite_books,
+            library_commands::delete_library_download,
+            library_commands::set_book_favorite,
+            library_commands::discover_books,
+            library_commands::book_download_options,
+            library_commands::validate_library_file,
+            library_commands::convert_library_book,
+            library_commands::export_library_book,
+            library_commands::open_external_file,
+            library_commands::open_book_website,
+            source_commands::mirror_configuration,
+            source_commands::save_mirror_subscription,
+            source_commands::add_book_mirror,
+            source_commands::remove_book_mirror,
+            source_commands::refresh_book_mirrors,
+            source_commands::select_book_mirror,
+            imports::import_local_books,
+            imports::import_paths,
+            imports::remove_library_item,
             resolve_host,
             zlibrary_status,
             zlibrary_login,

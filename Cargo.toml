@@ -3,7 +3,7 @@ members = ["crates/lumina-core", "src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.8.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.88"
@@ -14,8 +14,8 @@ async-trait = "0.1"
 dashmap = "6"
 encoding_rs = "0.8"
 futures = "0.3"
-hickory-resolver = { version = "0.26.2", features = ["tls-ring", "https-ring"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip", "brotli", "deflate", "http2"] }
+hickory-resolver = { version = "0.26.2", features = ["tls-ring", "https-ring", "webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip", "brotli", "deflate", "http2", "socks"] }
 roxmltree = "0.20"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

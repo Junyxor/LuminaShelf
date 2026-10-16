@@ -3,89 +3,294 @@ name: Android CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
     inputs:
       publish_prerelease:
-        description: Publish the built APK as a GitHub prerelease
+        description: Publish the signed APK as a prerelease
         required: false
         type: boolean
         default: false
       tag:
-        description: Prerelease tag
+        description: Release tag (required only when publishing)
         required: false
-        default: v0.5.0-alpha.1
+        default: ""
+      android_smoke:
+        description: Boot the signed APK in a headless Android emulator
+        required: false
+        type: boolean
+        default: true
+      verify_build_run:
+        description: Test an existing universal or x86_64 artifact without rebuilding (Actions run ID)
+        required: false
+        type: string
+        default: ""
+      apk_variant:
+        description: APK variants to build (all produces three separately signed packages)
+        required: false
+        type: choice
+        default: all
+        options: [all, universal, x86, x86_64]
+      network_diagnostics:
+        description: Capture an independent Android platform TLS control under bandwidth shaping
+        required: false
+        type: boolean
+        default: false
+      bandwidth_shaper:
+        description: Backend for the real Android slow-download acceptance test
+        required: false
+        type: choice
+        default: proxy
+        options: [proxy, host, emulator]
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
+
+concurrency:
+  group: android-${{ github.head_ref || github.ref }}-${{ inputs.verify_build_run && 'verify' || 'build' }}-${{ inputs.apk_variant || 'all' }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2"
+  LUMINA_APK_VARIANT: ${{ inputs.apk_variant || 'all' }}
 
 jobs:
-  android:
+  validate-inputs:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate requested verification
+        env:
+          VERIFY_BUILD_RUN: ${{ inputs.verify_build_run }}
+          ANDROID_SMOKE: ${{ inputs.android_smoke }}
+        run: |
+          if [[ -n "$VERIFY_BUILD_RUN" ]]; then
+            if [[ ! "$VERIFY_BUILD_RUN" =~ ^[0-9]+$ ]]; then
+              echo '::error::verify_build_run must be a numeric Actions run ID.'
+              exit 1
+            fi
+            if [[ "$LUMINA_APK_VARIANT" == 'x86' || "$ANDROID_SMOKE" != 'true' ]]; then
+              echo '::error::Existing-artifact verification requires android_smoke=true and a universal or x86_64 APK.'
+              exit 1
+            fi
+          fi
+
+  checks:
+    if: ${{ !inputs.verify_build_run }}
+    needs: validate-inputs
+    runs-on: windows-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run build
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --lib --locked
+      - run: cargo clippy -p lumina-core --all-targets --locked -- -D warnings
+      - run: python scripts/check-android-proxy.py
+      - name: Install headless UI test browser
+        run: npx playwright install chromium
+      - run: npm run test:ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-verification
+          path: artifacts/testing/v08/
+          if-no-files-found: ignore
 
+  package:
+    if: github.event_name != 'pull_request' && !inputs.verify_build_run
+    needs: checks
+    runs-on: windows-latest
+    timeout-minutes: 100
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools
-
+          packages: platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
-
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install frontend dependencies
-        run: npm install
-
-      - name: Initialize Android project
-        run: npm run tauri -- android init --ci
-
-      - name: Resolve Android NDK
-        shell: bash
+        with:
+          cache-targets: true
+          shared-key: android-release
+          workspaces: . -> target
+          cache-on-failure: true
+      - run: npm ci
+      - name: Initialize Android project without changing reviewed source
+        shell: pwsh
         run: |
-          NDK_HOME="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          test -n "$NDK_HOME"
-          test -d "$NDK_HOME/toolchains/llvm"
-          echo "Using Android NDK: $NDK_HOME"
-          echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
-
-      - name: Build arm64 debug APK
-        run: npm run tauri -- android build --debug --apk --target aarch64
-
-      - name: Stage APK
-        shell: bash
+          $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
+          npm run android:prepare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $changes = git status --porcelain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($changes) { $changes; git diff --stat; throw 'Android initialization changed source files.' }
+      - name: Restore existing signing identity
+        env:
+          LUMINASHELF_ANDROID_KEYSTORE: ${{ secrets.LUMINASHELF_ANDROID_KEYSTORE }}
+          LUMINASHELF_ANDROID_STORE_PASSWORD: ${{ secrets.LUMINASHELF_ANDROID_STORE_PASSWORD }}
+          LUMINASHELF_ANDROID_KEY_ALIAS: ${{ secrets.LUMINASHELF_ANDROID_KEY_ALIAS }}
+        run: node scripts/restore-signing.mjs
+      - name: Build and verify selected signed APK variants
+        shell: pwsh
         run: |
-          APK="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
-          test -f "$APK"
-          cp "$APK" LuminaShelf-arm64-v8a-debug.apk
-
-      - name: Upload APK artifact
+          $env:NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
+          $selectedVariants = @('universal', 'x86', 'x86_64')
+          if ($env:LUMINA_APK_VARIANT -ne 'all') {
+            if ($env:LUMINA_APK_VARIANT -notin $selectedVariants) { throw 'Unknown APK variant' }
+            $selectedVariants = @($env:LUMINA_APK_VARIANT)
+          }
+          foreach ($variantName in $selectedVariants) {
+            switch ($variantName) {
+              'universal' { npm run android:release }
+              'x86' { npm run android:release -- i686 }
+              'x86_64' { npm run android:release -- x86_64 }
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ./scripts/verify-apk.ps1 -Variant $variantName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Upload signed APK and public verification data
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'universal'
         uses: actions/upload-artifact@v4
         with:
-          name: LuminaShelf-android-arm64-debug
-          path: LuminaShelf-arm64-v8a-debug.apk
+          name: LuminaShelf-signed-universal
+          path: |
+            artifacts/android/*-universal-release.apk
+            artifacts/android/*-universal-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/universal-build-info.json
+            artifacts/android/universal-apk-verification.json
           if-no-files-found: error
-
-      - name: Publish GitHub prerelease
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_prerelease
+      - name: Upload signed x86 APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'x86'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-x86
+          path: |
+            artifacts/android/*-x86-release.apk
+            artifacts/android/*-x86-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/x86-build-info.json
+            artifacts/android/x86-apk-verification.json
+          if-no-files-found: error
+      - name: Upload signed x86_64 APK
+        if: env.LUMINA_APK_VARIANT == 'all' || env.LUMINA_APK_VARIANT == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuminaShelf-signed-x86_64
+          path: |
+            artifacts/android/*-x86_64-release.apk
+            artifacts/android/*-x86_64-release.apk.sha256
+            artifacts/android/release-certificate.pem
+            artifacts/android/x86_64-build-info.json
+            artifacts/android/x86_64-apk-verification.json
+          if-no-files-found: error
+      - name: Publish an explicitly requested release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_prerelease)
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        shell: bash
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: pwsh
         run: |
-          gh release create "$RELEASE_TAG" LuminaShelf-arm64-v8a-debug.apk \
-            --target "$GITHUB_SHA" \
-            --title "LuminaShelf ${RELEASE_TAG}" \
-            --notes "Early Android arm64 test build. This prerelease is intended for installation and real-device testing." \
-            --prerelease
+          if (-not $env:RELEASE_TAG.StartsWith('v')) { throw 'Publishing requires a v-prefixed version tag.' }
+          $assets = Get-ChildItem artifacts/android/*-release.apk,artifacts/android/*.apk.sha256,artifacts/android/release-certificate.pem | ForEach-Object FullName
+          $releaseArguments = @('release','create',$env:RELEASE_TAG,'--target',$env:GITHUB_SHA,'--title',"LuminaShelf $env:RELEASE_TAG",'--generate-notes')
+          if ($env:PRERELEASE -eq 'true') { $releaseArguments += '--prerelease' }
+          & gh @releaseArguments @assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Remove restored private signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $signingPath = Join-Path $env:GITHUB_WORKSPACE '.signing'
+          $expectedPath = [IO.Path]::GetFullPath($signingPath)
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE) -or -not $expectedPath.StartsWith([IO.Path]::GetFullPath($env:GITHUB_WORKSPACE) + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected signing cleanup path' }
+          if (Test-Path -LiteralPath $expectedPath) { Remove-Item -LiteralPath $expectedPath -Recurse -Force }
+      - name: Diagnose source metadata after a failed build
+        if: failure()
+        shell: pwsh
+        run: |
+          git status --porcelain
+          git diff --stat
+          if (Test-Path -LiteralPath artifacts/android/universal-build-info.json) { Get-Content -LiteralPath artifacts/android/universal-build-info.json }
+
+  android-smoke:
+    if: always() && needs.validate-inputs.result == 'success' && github.event_name != 'pull_request' && inputs.apk_variant != 'x86' && (inputs.verify_build_run || needs.package.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.android_smoke)
+    needs: [validate-inputs, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.apk_variant == 'x86_64' && 'LuminaShelf-signed-x86_64' || 'LuminaShelf-signed-universal' }}
+          path: package
+          run-id: ${{ inputs.verify_build_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.verify_build_run && inputs.apk_variant != 'universal' && inputs.apk_variant != 'x86_64' }}
+        with:
+          name: LuminaShelf-signed-x86_64
+          path: package/x86_64
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start local TLS tunnel control
+        if: ${{ !inputs.bandwidth_shaper || inputs.bandwidth_shaper == 'proxy' }}
+        run: |
+          mkdir -p smoke
+          python3 scripts/android-proxy.py serve > smoke/network-proxy.log 2>&1 &
+          echo $! > smoke/network-proxy.pid
+          for attempt in {1..20}; do
+            if test -f smoke/network-proxy/ready; then break; fi
+            sleep 0.25
+          done
+          test -f smoke/network-proxy/ready
+      - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ (inputs.verify_build_run || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && '1' || '0' }}
+          LUMINA_SMOKE_APK_VARIANT: ${{ inputs.apk_variant == 'x86_64' && 'x86_64' || 'universal' }}
+          LUMINA_RUN_NETWORK_DIAGNOSTICS: ${{ inputs.network_diagnostics && '1' || '0' }}
+          LUMINA_SMOKE_SHAPER: ${{ inputs.bandwidth_shaper || 'proxy' }}
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -cores 2 -memory 2048 ${{ (!inputs.bandwidth_shaper || inputs.bandwidth_shaper == 'proxy') && '-http-proxy http://127.0.0.1:18888' || '' }}
+          script: bash scripts/android-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-release-smoke
+          path: smoke/
+          if-no-files-found: ignore

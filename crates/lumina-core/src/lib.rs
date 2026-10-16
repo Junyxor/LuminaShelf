@@ -3,6 +3,7 @@
 //! Network, provider, download, reading and persistent user state live here so UI
 //! shells remain thin and replaceable.
 
+pub mod conversion;
 pub mod download;
 pub mod library;
 pub mod mirror;

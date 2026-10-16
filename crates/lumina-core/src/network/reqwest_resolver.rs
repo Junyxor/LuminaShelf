@@ -19,7 +19,7 @@ impl Resolve for ReqwestResolver {
         let host = name.as_str().to_owned();
         Box::pin(async move {
             let result = resolver.resolve(&host).await.map_err(|error| {
-                Box::new(io::Error::other(error.to_string()))
+                Box::new(io::Error::other(format!("{error:#}")))
                     as Box<dyn std::error::Error + Send + Sync>
             })?;
             let addrs: Addrs = Box::new(

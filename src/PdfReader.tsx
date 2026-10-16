@@ -5,7 +5,7 @@ import type {
   PDFDocumentProxy,
 } from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
-import "./pdf.css";
+import "./pdf-light.css";
 
 const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
 const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
@@ -17,8 +17,8 @@ let pdfJsRuntimePromise: Promise<PdfJsRuntime> | null = null;
 function loadPdfJsRuntime(): Promise<PdfJsRuntime> {
   if (!pdfJsRuntimePromise) {
     pdfJsRuntimePromise = Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.mjs?url"),
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.mjs?url"),
     ]).then(([pdfJs, worker]) => {
       pdfJs.GlobalWorkerOptions.workerSrc = worker.default;
       return pdfJs;
@@ -108,9 +108,10 @@ function createTauriPdfRangeTransport(
 
 export default function PdfReader({ libraryId, path, title, onClose }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
-  const [zoom, setZoom] = useState(1.15);
+  const [zoom, setZoom] = useState(1);
   const [loading, setLoading] = useState(true);
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -157,6 +158,9 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
         });
         const loadedDocument = await loadingTask.promise;
         if (cancelled) return;
+        const firstPage = await loadedDocument.getPage(1);
+        const width = stageRef.current?.clientWidth || window.innerWidth;
+        setZoom(Math.min(1.4, Math.max(0.25, (width - 32) / firstPage.getViewport({ scale: 1 }).width)));
         const savedPage = progress?.locator?.startsWith("page:")
           ? Number(progress.locator.slice(5))
           : Math.ceil((progress?.fraction ?? 0) * loadedDocument.numPages);
@@ -232,20 +236,20 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
     <div className="pdf-backdrop" onClick={onClose}>
       <section className="pdf-shell" onClick={(event) => event.stopPropagation()}>
         <header className="pdf-toolbar">
-          <button className="ghost-button" onClick={onClose}>← 返回书库</button>
+          <button className="ghost-button" onClick={onClose}>← 书架</button>
           <div className="pdf-title">
             <strong>{title}</strong>
             <small>{numPages ? `第 ${pageNumber} / ${numPages} 页` : "正在载入 PDF…"}</small>
           </div>
           <div className="pdf-zoom-controls">
-            <button onClick={() => setZoom((value) => Math.max(0.6, Math.round((value - 0.1) * 10) / 10))}>−</button>
+            <button aria-label="缩小 PDF" onClick={() => setZoom((value) => Math.max(0.25, Math.round((value - 0.1) * 10) / 10))}>−</button>
             <strong>{Math.round(zoom * 100)}%</strong>
-            <button onClick={() => setZoom((value) => Math.min(2.5, Math.round((value + 0.1) * 10) / 10))}>+</button>
+            <button aria-label="放大 PDF" onClick={() => setZoom((value) => Math.min(2.5, Math.round((value + 0.1) * 10) / 10))}>+</button>
           </div>
         </header>
 
-        <div className="pdf-stage">
-          {loading ? <div className="pdf-status">正在通过 Rust Core 分块读取 PDF…</div> : null}
+        <div className="pdf-stage" ref={stageRef}>
+          {loading ? <div className="pdf-status">正在打开 PDF…</div> : null}
           {error ? <div className="pdf-status error">{error}</div> : null}
           {!loading && !error ? (
             <div className={`pdf-canvas-wrap ${rendering ? "rendering" : ""}`}>

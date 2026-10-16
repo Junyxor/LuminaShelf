@@ -1,0 +1,13 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+const encoded = process.env.LUMINASHELF_ANDROID_KEYSTORE;
+const storePassword = process.env.LUMINASHELF_ANDROID_STORE_PASSWORD;
+const alias = process.env.LUMINASHELF_ANDROID_KEY_ALIAS;
+if (!encoded || !storePassword || !alias) throw new Error("Release signing requires all three LUMINASHELF_ANDROID_* repository secrets; a replacement identity will not be generated.");
+const directory = resolve(".signing");
+mkdirSync(directory, { recursive: true, mode: 0o700 });
+const bytes = Buffer.from(encoded, "base64");
+if (bytes.length < 1000) throw new Error("Release keystore secret is invalid");
+writeFileSync(resolve(directory, "luminashelf-release.p12"), bytes, { mode: 0o600 });
+writeFileSync(resolve(directory, "release.json"), JSON.stringify({ alias, storePassword }), { mode: 0o600 });
+console.log("Existing Android release signing identity restored from repository secrets.");

@@ -88,6 +88,19 @@ pub struct SearchResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DiscoveryPage {
+    pub title: String,
+    pub source_url: String,
+    pub items: Vec<BookSummary>,
+    pub fetched_at_unix_ms: i64,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BookDetails {
     #[serde(flatten)]
     pub summary: BookSummary,
