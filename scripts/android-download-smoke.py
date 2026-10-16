@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -11,6 +12,8 @@ OUT = Path("smoke")
 PACKAGE = "app.luminashelf.client"
 steps = []
 DISPLAY = [1080, 2400]
+UI_COMMAND = ["adb", "shell", "CLASSPATH=/data/local/tmp/lumina-ui-dump.dex:/system/framework/uiautomator.jar:/system/framework/android.test.runner.jar", "app_process", "/system/bin", "AndroidUiDump", "--serve"]
+bridge = None
 
 
 def adb(*args, check=True):
@@ -29,11 +32,24 @@ def network_speed(speed, check=True):
     return adb("emu", "network", "speed", speed, check=check)
 
 
+def ui_request(command):
+    with socket.create_connection(("127.0.0.1", 17891), timeout=20) as connection:
+        connection.sendall(command.encode("ascii") + b"\n")
+        with connection.makefile("rb") as stream:
+            length = int(stream.readline())
+            if not 0 < length <= 4 * 1024 * 1024:
+                raise RuntimeError("Invalid Android accessibility response size")
+            response = stream.read(length)
+            if len(response) != length:
+                raise RuntimeError("Incomplete Android accessibility snapshot")
+            return response
+
+
 def tree():
-    result = adb("shell", "CLASSPATH=/data/local/tmp/lumina-ui-dump.dex:/system/framework/uiautomator.jar:/system/framework/android.test.runner.jar", "app_process", "/system/bin", "AndroidUiDump", "/sdcard/lumina-download-test.xml", check=False)
-    if "dumped" not in result:
-        raise RuntimeError("Android accessibility tree was not ready: " + result)
-    return ET.fromstring(adb("shell", "cat", "/sdcard/lumina-download-test.xml"))
+    response = ui_request("DUMP")
+    if response.startswith(b"ERROR "):
+        raise RuntimeError(response.decode("utf-8"))
+    return ET.fromstring(response)
 
 
 def label(node):
@@ -68,7 +84,7 @@ def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
             error = " | ".join(label(n).strip() for n in root.iter("node") if label(n).strip())[-4000:]
             if scroll:
                 adb("shell", "input", "swipe", str(DISPLAY[0] // 2), str(int(DISPLAY[1] * 0.72)), str(DISPLAY[0] // 2), str(int(DISPLAY[1] * 0.35)), "300")
-        except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, ET.ParseError) as exc:
             error = str(exc)
         time.sleep(0.4)
     raise AssertionError("Timed out waiting for Android UI: " + error)
@@ -105,6 +121,17 @@ def progress(root):
 
 
 try:
+    adb("forward", "tcp:17891", "tcp:17891")
+    with (OUT / "ui-bridge.log").open("w", encoding="utf-8") as bridge_log:
+        bridge = subprocess.Popen(UI_COMMAND, stdout=bridge_log, stderr=subprocess.STDOUT)
+    for attempt in range(30):
+        try:
+            if ui_request("PING") == b"READY":
+                break
+        except (OSError, ValueError):
+            time.sleep(0.2)
+    else:
+        raise RuntimeError("Android accessibility bridge did not start")
     DISPLAY = list(map(int, re.findall(r"(\d+)x(\d+)", adb("shell", "wm", "size"))[-1]))
     # Use cellular IPv4 for both the host-kernel and legacy emulator shapers.
     adb("shell", "svc", "wifi", "disable")
@@ -195,9 +222,25 @@ try:
     evidence("download-completed")
     click("阅读")
     wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
-    wait_node(lambda n: len(n.get("text", "")) > 160, 60)
+    for chapter_attempt in range(7):
+        current = tree()
+        if any(len(n.get("text", "")) > 160 for n in current.iter("node")):
+            break
+        if chapter_attempt == 6:
+            raise AssertionError("EPUB reader showed no real paragraph after six chapter advances")
+        click("下一章")
+        time.sleep(0.5)
+    wait_node(lambda n: len(n.get("text", "")) > 160, 30)
     evidence("download-reader")
     steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved})
 finally:
     network_speed("full", check=False)
+    try:
+        if bridge is not None:
+            ui_request("STOP")
+            bridge.wait(timeout=5)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        if bridge is not None:
+            bridge.terminate()
+    adb("forward", "--remove", "tcp:17891", check=False)
     (OUT / "download-smoke.json").write_text(json.dumps({"platform": "signed Android release, headless API35 emulator", "fixture": False, "bandwidthShaper": os.environ.get("LUMINA_SMOKE_SHAPER", "emulator"), "steps": steps}, ensure_ascii=False, indent=2), encoding="utf-8")
