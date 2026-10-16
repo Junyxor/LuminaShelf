@@ -120,6 +120,11 @@ def progress(root):
     return max((byte_progress(label(node)) for node in root.iter("node")), default=0)
 
 
+def task_state(node, state):
+    # The filter tabs repeat these labels even when no task has that state.
+    return node.get("class") == "android.widget.TextView" and node.get("text") == state
+
+
 try:
     adb("forward", "tcp:17891", "tcp:17891")
     with (OUT / "ui-bridge.log").open("w", encoding="utf-8") as bridge_log:
@@ -162,7 +167,7 @@ try:
     # failures must be distinguished from shaping and saved-progress behavior.
     network_speed("full")
     click_node(download)
-    wait_node(lambda n: n.get("text") == "已完成", 150)
+    wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-unshaped-control")
     steps.append({"step": "unshaped real HTTPS download control", "title": title})
     manage, _ = wait_node(lambda n: label(n).strip().startswith("管理下载 "))
@@ -186,7 +191,7 @@ try:
     adb("shell", "am", "start", "-n", PACKAGE + "/.MainActivity")
     # Pause through the visible control; the transfer must checkpoint before returning.
     click("暂停", 100)
-    _, root = wait_node(lambda n: n.get("text") == "已暂停", 60)
+    _, root = wait_node(lambda n: task_state(n, "已暂停"), 60)
     saved = progress(root)
     assert saved > 0, "No partial bytes saved"
     assert saved > before, "No byte progress while app was in background"
@@ -205,7 +210,7 @@ try:
     adb("shell", "am", "force-stop", PACKAGE)
     adb("shell", "am", "start", "-n", PACKAGE + "/.MainActivity")
     click("下载")
-    _, recovered = wait_node(lambda n: n.get("text") == "已暂停", 60)
+    _, recovered = wait_node(lambda n: task_state(n, "已暂停"), 60)
     assert progress(recovered) == saved, "Partial progress did not survive process death"
     # Real Android long touch, then release: must open management without activating a destructive row.
     title_node, _ = wait_node(lambda n: n.get("text", "").strip() == title)
@@ -218,7 +223,7 @@ try:
     network_speed("full")
     node, _ = wait_node(lambda n: label(n).strip().startswith("继续下载 ") or n.get("text") == "继续下载")
     click_node(node)
-    wait_node(lambda n: n.get("text") == "已完成", 150)
+    wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-completed")
     click("阅读")
     wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
