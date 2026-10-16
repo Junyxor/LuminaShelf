@@ -32,6 +32,11 @@ on:
         type: choice
         default: all
         options: [all, universal, x86, x86_64]
+      network_diagnostics:
+        description: Capture an independent Android platform TLS control under bandwidth shaping
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -256,6 +261,7 @@ jobs:
         env:
           LUMINA_SMOKE_UNIVERSAL_ONLY: ${{ (inputs.verify_build_run || inputs.apk_variant == 'universal' || inputs.apk_variant == 'x86_64') && '1' || '0' }}
           LUMINA_SMOKE_APK_VARIANT: ${{ inputs.apk_variant == 'x86_64' && 'x86_64' || 'universal' }}
+          LUMINA_RUN_NETWORK_DIAGNOSTICS: ${{ inputs.network_diagnostics && '1' || '0' }}
         with:
           api-level: 35
           arch: x86_64
