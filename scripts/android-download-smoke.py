@@ -226,11 +226,20 @@ try:
     wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-completed")
     click("阅读")
-    try:
-        wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
-    except AssertionError:
-        evidence("reader-accessibility-all", all_nodes=True)
-        raise
+    reader_focus_tabs = 0
+    reader_deadline = time.monotonic() + 60
+    while True:
+        remaining = max(0, reader_deadline - time.monotonic())
+        try:
+            wait_node(lambda n: "书架" in label(n) and "←" in label(n), remaining if reader_focus_tabs == 8 else min(5, remaining))
+            break
+        except AssertionError:
+            if reader_focus_tabs == 8 or time.monotonic() >= reader_deadline:
+                evidence("reader-accessibility-all", all_nodes=True)
+                raise
+            # Move real keyboard focus into the overlay without activating controls.
+            adb("shell", "input", "keyevent", "KEYCODE_TAB")
+            reader_focus_tabs += 1
     for chapter_attempt in range(7):
         current = tree()
         if any(len(n.get("text", "")) > 160 for n in current.iter("node")):
@@ -241,7 +250,7 @@ try:
         time.sleep(0.5)
     wait_node(lambda n: len(n.get("text", "")) > 160, 30)
     evidence("download-reader")
-    steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved})
+    steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved, "readerFocusTabs": reader_focus_tabs})
 finally:
     network_speed("full", check=False)
     try:
