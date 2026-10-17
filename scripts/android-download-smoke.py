@@ -61,6 +61,10 @@ def bounds(node):
     return values if len(values) == 4 else [0, 0, 0, 0]
 
 
+class UiWaitTimeout(AssertionError):
+    pass
+
+
 def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
     end = time.monotonic() + seconds
     error = ""
@@ -87,7 +91,7 @@ def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
         except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, ET.ParseError) as exc:
             error = str(exc)
         time.sleep(0.4)
-    raise AssertionError("Timed out waiting for Android UI: " + error)
+    raise UiWaitTimeout("Timed out waiting for Android UI: " + error)
 
 
 def click_node(node):
@@ -233,7 +237,7 @@ try:
         try:
             wait_node(lambda n: "书架" in label(n) and "←" in label(n), remaining if reader_focus_tabs == 8 else min(5, remaining))
             break
-        except AssertionError:
+        except UiWaitTimeout:
             if reader_focus_tabs == 8 or time.monotonic() >= reader_deadline:
                 evidence("reader-accessibility-all", all_nodes=True)
                 raise
