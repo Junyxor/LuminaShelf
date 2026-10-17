@@ -45,10 +45,12 @@ adb shell am start -W -n app.luminashelf.client/.MainActivity
 ui_ready=false
 for attempt in {1..20}; do
   if timeout 10s adb shell uiautomator dump /sdcard/luminashelf-ui.xml &&
-    adb pull /sdcard/luminashelf-ui.xml smoke/ui.xml &&
-    grep -q '我的书架' smoke/ui.xml; then
-    ui_ready=true
-    break
+    adb pull /sdcard/luminashelf-ui.xml smoke/ui.xml; then
+    python3 scripts/android-launcher-dialog.py smoke/ui.xml
+    if grep -q '我的书架' smoke/ui.xml; then
+      ui_ready=true
+      break
+    fi
   fi
   sleep 1
 done
@@ -62,10 +64,12 @@ adb shell am start -W -n app.luminashelf.client/.MainActivity
 x64_ready=false
 for attempt in {1..15}; do
   if timeout 10s adb shell uiautomator dump /sdcard/luminashelf-x64.xml &&
-    adb pull /sdcard/luminashelf-x64.xml smoke/x86_64-ui.xml &&
-    grep -q '我的书架' smoke/x86_64-ui.xml; then
-    x64_ready=true
-    break
+    adb pull /sdcard/luminashelf-x64.xml smoke/x86_64-ui.xml; then
+    python3 scripts/android-launcher-dialog.py smoke/x86_64-ui.xml
+    if grep -q '我的书架' smoke/x86_64-ui.xml; then
+      x64_ready=true
+      break
+    fi
   fi
   sleep 1
 done

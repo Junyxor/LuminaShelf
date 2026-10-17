@@ -142,6 +142,10 @@ limitations are recorded in `docs/android-shaping-reference.md`.
 An independent shell accessibility bridge stays connected throughout the test
 and reads visible nodes without waiting for continuous progress updates to stop.
 Each snapshot clears stale system accessibility nodes before reading coordinates.
+Task-state checks distinguish actual status text from the filter tabs. Startup
+handles only the emulator's exact Android-owned Quickstep ANR dialog; application
+ANRs and crashes continue to fail acceptance. Overlay diagnostics preserve node
+visibility and do not substitute hidden nodes for visible reading controls.
 It is compiled only for the cloud test, never included in the APK. The normal
 workflow runs a regression for shared rate, unchanged bytes and TCP half-close.
 
