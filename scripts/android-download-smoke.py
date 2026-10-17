@@ -45,8 +45,8 @@ def ui_request(command):
             return response
 
 
-def tree():
-    response = ui_request("DUMP")
+def tree(all_nodes=False):
+    response = ui_request("DUMP_ALL" if all_nodes else "DUMP")
     if response.startswith(b"ERROR "):
         raise RuntimeError(response.decode("utf-8"))
     return ET.fromstring(response)
@@ -101,8 +101,8 @@ def click(text, seconds=75):
     return root
 
 
-def evidence(name):
-    root = tree()
+def evidence(name, all_nodes=False):
+    root = tree(all_nodes)
     ET.ElementTree(root).write(OUT / (name + ".xml"), encoding="utf-8", xml_declaration=True)
     adb("shell", "screencap", "-p", "/sdcard/lumina-step.png")
     adb("pull", "/sdcard/lumina-step.png", str(OUT / (name + ".png")))
@@ -226,7 +226,11 @@ try:
     wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-completed")
     click("阅读")
-    wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
+    try:
+        wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
+    except AssertionError:
+        evidence("reader-accessibility-all", all_nodes=True)
+        raise
     for chapter_attempt in range(7):
         current = tree()
         if any(len(n.get("text", "")) > 160 for n in current.iter("node")):
