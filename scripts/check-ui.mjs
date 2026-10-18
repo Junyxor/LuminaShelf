@@ -12,7 +12,7 @@ for (let attempt = 0; attempt < 60; attempt++) {
   if (attempt === 59) { server.kill(); throw new Error(`UI server did not start: ${serverLogs}`); }
   await new Promise((resolve) => setTimeout(resolve, 100));
 }
-const browser = await chromium.launch({ headless: true, args: ["--disable-gpu", "--disable-background-networking"] });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined, args: ["--disable-gpu", "--disable-background-networking"] });
 const results = [];
 let currentPage;
 try {
@@ -74,6 +74,7 @@ try {
           }
           if (command === "remove_download") { downloads = downloads.filter((task) => task.id !== args.id); write("ui-downloads", downloads); return null; }
           if (command === "pause_all_downloads") { for (const task of downloads.filter((task) => ["queued", "downloading"].includes(task.state))) { task.state = "paused"; task.activeConnections = 0; task.revision++; saveTask(task); } return null; }
+          if (command === "library_cover" || command === "book_cover_bytes") return new ArrayBuffer(0);
           if (command === "reading_progress") return null;
           if (command === "save_reading_progress" || command === "validate_library_file") return args;
           if (command === "open_local_book_metadata") return { title: "一部用来验证狭窄屏幕工具栏的长书名", chapters: [{ id: "text", title: "全文" }] };

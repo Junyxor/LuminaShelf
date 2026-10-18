@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { UserRound, LogOut, RefreshCw, AlertCircle, Check } from "lucide-react";
+import { LogOut, RefreshCw, AlertCircle, Check } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
 export type ZLibraryAccountStatus = { signedIn: boolean; origin: string; originMode: "automatic" | "manual" };
@@ -41,7 +41,7 @@ export default function AccountPage({ initialStatus, onStatusChange }: { initial
   async function logout() { setBusy(true); try { commit(await invoke<ZLibraryAccountStatus>("zlibrary_logout")); setProfile(null); setHistory(null); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } }
   async function refresh(page = 1) { setBusy(true); setError(null); try { await loadData(page); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } }
   return <div className="account-page">
-    <div className="account-heading"><UserRound size={30} strokeWidth={1.5} /><div><h2>Z-Library</h2><p>{status?.signedIn ? "账户已连接" : "登录你的书源账户"}</p></div>{status?.signedIn ? <span className="account-connected"><Check size={17} />已登录</span> : null}</div>
+    <div className="account-heading"><span className="seal" aria-hidden="true">Z</span><div><h2>{status?.signedIn ? "Z-Library" : "登录 Z-Library"}</h2><p>{status?.signedIn ? "账户已连接，重启应用后仍保持登录" : "浏览和搜索无需登录；下载书籍需要账户"}</p></div>{status?.signedIn ? <span className="account-connected"><Check size={15} />已登录</span> : null}</div>
     {error ? <div className="account-error" role="alert"><AlertCircle size={19} /><span>{error}</span></div> : null}
     {!status?.signedIn ? <form onSubmit={login} className="account-form">
       <label className="network-field"><span>邮箱</span><input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="你的账户邮箱" required /></label>
@@ -49,11 +49,11 @@ export default function AccountPage({ initialStatus, onStatusChange }: { initial
       <label className="network-field"><span>站点地址</span><select value={mode} onChange={(event) => setMode(event.target.value as "automatic" | "manual")}><option value="automatic">自动检测可用站点</option><option value="manual">使用我指定的站点</option></select></label>
       {mode === "manual" ? <label className="network-field"><span>指定站点</span><input type="url" spellCheck={false} autoCapitalize="none" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder="https://你的站点域名" required /></label> : null}
       <button className="primary-button full-width" disabled={busy || !email.trim() || !password}>{busy ? "正在连接账户…" : "登录"}</button>
-      <p className="account-help">站点无法连接时，可以在设置中检查网络或更换站点地址。</p>
+      <p className="account-help">密码只用于本次登录，不会保存；应用只保存书源返回的登录凭据。自动模式下，当前站点无法连接时会切换到其他可用镜像。</p>
     </form> : <>
-      <div className="account-site"><span>当前站点</span><strong>{status.origin}</strong></div>
-      {profile ? <div className="account-quota"><span>今日可下载</span><strong>{profile.downloadsRemaining}<small> / {profile.downloadsLimit} 本</small></strong></div> : null}
-      <div className="account-buttons"><button className="secondary-button" disabled={busy} onClick={() => void refresh()}><RefreshCw size={18} />刷新账户</button><button className="text-button" disabled={busy} onClick={() => void logout()}><LogOut size={18} />退出登录</button></div>
+      {profile ? <div className="account-quota"><span>今日还可下载</span><strong>{profile.downloadsRemaining}<small> / {profile.downloadsLimit} 本</small></strong></div> : null}
+      <div className="account-site"><span>当前站点</span><strong>{status.origin}{status.originMode === "automatic" ? " · 自动切换" : ""}</strong></div>
+      <div className="account-buttons"><button className="secondary-button" disabled={busy} onClick={() => void refresh()}><RefreshCw size={17} />刷新账户</button><button className="text-button" disabled={busy} onClick={() => void logout()}><LogOut size={17} />退出登录</button></div>
       <section className="account-history"><h3>下载记录</h3>{history?.items.length ? history.items.map((item) => <article key={`${item.book.id}:${item.downloadedAt}`}><h4>{item.book.title}</h4><p>{item.book.authors.join(" · ") || "作者未提供"}{item.downloadedAt ? ` · ${item.downloadedAt}` : ""}</p></article>) : <p>暂无下载记录</p>}{history ? <div className="account-buttons"><button className="secondary-button" disabled={busy || history.page <= 1} onClick={() => void refresh(history.page - 1)}>上一页</button><button className="secondary-button" disabled={busy || !history.hasNext} onClick={() => void refresh(history.page + 1)}>下一页</button></div> : null}</section>
     </>}
   </div>;

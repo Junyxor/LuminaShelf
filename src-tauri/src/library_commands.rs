@@ -246,6 +246,30 @@ pub async fn book_download_options(
     })
 }
 
+/// The embedded cover of a downloaded or imported book; empty when it has none.
+#[tauri::command]
+pub async fn library_cover(
+    state: State<'_, AppState>,
+    library_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let item = state
+        .state_store
+        .list_library_items()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|item| item.id == library_id)
+        .ok_or("书架中没有此文件")?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        lumina_core::epub_cover(&item.path)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub async fn validate_library_file(
     state: State<'_, AppState>,

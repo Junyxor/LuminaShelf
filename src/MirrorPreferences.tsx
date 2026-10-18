@@ -20,20 +20,20 @@ export default function MirrorPreferences({ onSelected }: { onSelected: (status:
   async function refresh() { await perform(async () => setConfig(await invoke<Configuration>("refresh_book_mirrors"))); }
   async function use(mirror: Mirror) { await perform(async () => { onSelected(await invoke<ZLibraryAccountStatus>("select_book_mirror", { id: mirror.id })); setConfig((value) => value ? { ...value, selectedOrigin: mirror.origin } : value); }); }
   return <section className="settings-section mirror-section" aria-label="书源镜像设置">
-    <div className="network-heading"><div><h2>书源镜像</h2><p>Z-Library 的访问地址与发布清单。拉取后逐站检查接口是否可用。</p></div></div>
+    <div className="network-heading"><p>Z-Library 的访问地址。拉取发布清单后，逐站检测接口是否可用。</p></div>
     <div className="current-network"><span>当前书源地址</span><strong>{config?.selectedOrigin || "正在读取…"}</strong></div>
-    <button className="secondary-button network-auto" onClick={() => void refresh()} disabled={busy || !config}><RefreshCw size={19} />{busy ? "正在拉取和检测…" : "拉取并检测镜像"}</button>
+    <button className="secondary-button network-auto" onClick={() => void refresh()} disabled={busy || !config}><RefreshCw size={18} />{busy ? "正在拉取和检测…" : "拉取并检测镜像"}</button>
     {busy && progress ? <p className="settings-hint" role="status">{progress.phase}{progress.total ? ` ${progress.done} / ${progress.total}` : "…"}</p> : null}
     {config?.lastRefresh ? <p className="settings-hint">上次拉取：{new Date(config.lastRefresh).toLocaleString()}</p> : null}
     {error ? <p className="network-feedback error" role="alert">{error}</p> : null}
     <div className="mirror-list">{config?.mirrors.map((mirror) => <article className="mirror-item" key={mirror.id}>
       <div className="profile-title"><strong>{mirror.origin}</strong>{mirror.origin === config.selectedOrigin ? <span className="profile-current"><Check size={16} />使用中</span> : null}</div>
-      <p className={mirror.available === false ? "error-text" : "settings-hint"}>{mirror.available === null || mirror.available === undefined ? "未检测" : mirror.available ? `接口可用 · ${Math.round(mirror.latencyMs || 0)} ms` : "本次连接未通过"}{mirror.redirector ? " · 跳转地址" : ""}{!mirror.contentAvailable ? " · 目录未标记为内容站" : ""}</p>
+      <p className={`mirror-status ${mirror.available === false ? "bad" : mirror.available ? "good" : ""}`}>{mirror.available === null || mirror.available === undefined ? "未检测" : mirror.available ? `接口可用 · ${Math.round(mirror.latencyMs || 0)} ms` : "本次连接未通过"}{mirror.redirector ? " · 跳转地址" : ""}{!mirror.contentAvailable ? " · 目录未标记为内容站" : ""}</p>
       {mirror.error ? <p className="settings-hint">{mirror.error}</p> : null}
       <details className="mirror-provenance"><summary>地址来源<ChevronDown size={16} /></summary>{mirror.sources.map((source) => <p key={source}>{source}</p>)}</details>
       <div className="profile-actions"><button className="secondary-button" disabled={busy || mirror.origin === config.selectedOrigin} aria-label={`使用镜像 ${mirror.origin}`} onClick={() => void use(mirror)}>使用此站点</button><button className="icon-button" aria-label={`移除镜像 ${mirror.origin}`} disabled={busy} onClick={() => void perform(async () => setConfig(await invoke<Configuration>("remove_book_mirror", { id: mirror.id })))}><Trash2 size={19} /></button></div>
     </article>)}</div>
-    <p className="settings-hint">切换站点会退出当前书源账户。目录条目保留发布来源，是否可用以实际检测为准。</p>
+    <p className="settings-hint">切换站点会保留登录状态，之后固定使用所选站点。登录时选择“自动检测可用站点”，当前站点无法连接时会自动换到可用镜像。</p>
     <details className="network-advanced"><summary>添加镜像与发布源<ChevronDown size={18} /></summary>
       <label className="network-field"><span>镜像站点地址</span><input aria-label="镜像站点地址" type="url" placeholder="https://你的站点" value={origin} onChange={(event) => setOrigin(event.target.value)} /></label>
       <button className="secondary-button" disabled={busy || !origin.trim()} onClick={() => void perform(async () => { setConfig(await invoke<Configuration>("add_book_mirror", { origin })); setOrigin(""); })}><Plus size={18} />添加镜像</button>

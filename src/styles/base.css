@@ -1,0 +1,104 @@
+/* Tokens, reset and controls. Light-only: the reader has its own night theme. */
+:root {
+  color-scheme: light;
+  --paper: #f4efe6;
+  --paper-deep: #ebe4d7;
+  --surface: #fbf8f2;
+  --ink: #1d1b18;
+  --ink-2: #57514a;
+  --ink-3: #716a5f;
+  --rule: rgba(29, 27, 24, 0.1);
+  --rule-strong: rgba(29, 27, 24, 0.18);
+  --tint: rgba(29, 27, 24, 0.055);
+  --tint-strong: rgba(29, 27, 24, 0.09);
+  --cinnabar: #ad3a25;
+  --cinnabar-soft: rgba(173, 58, 37, 0.09);
+  --ok: #3d6a4c;
+  --warn: #87611d;
+  --radius: 12px;
+  --radius-sm: 7px;
+  --shadow-book: 0 1px 1px rgba(40, 26, 12, 0.14), 0 12px 22px -14px rgba(40, 26, 12, 0.55);
+  --shadow-sheet: 0 30px 70px -24px rgba(40, 28, 16, 0.42), 0 2px 8px rgba(40, 28, 16, 0.08);
+  --font-ui: system-ui, -apple-system, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", STSong, SimSun, Georgia, serif;
+  --nav-height: 64px;
+  font-family: var(--font-ui);
+  font-synthesis: none;
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: var(--paper); }
+::selection { background: rgba(173, 58, 37, 0.18); }
+h1, h2, h3, h4, p { margin-top: 0; }
+h1 { margin-bottom: 0; font: 600 34px/1.2 var(--font-serif); letter-spacing: 0.01em; }
+h2 { font-size: 19px; line-height: 1.4; font-weight: 600; }
+h3 { font-size: 15px; line-height: 1.5; font-weight: 600; }
+a { color: var(--cinnabar); text-underline-offset: 3px; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { min-height: 48px; min-width: 48px; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:disabled { cursor: default; opacity: 0.45; }
+button svg { flex-shrink: 0; }
+:focus-visible { outline: 2px solid var(--cinnabar); outline-offset: 2px; }
+
+input, select, textarea {
+  min-height: 48px; min-width: 0; max-width: 100%; width: 100%;
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-sm);
+  padding: 11px 13px; background: var(--surface); font-size: 16px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:hover, select:hover, textarea:hover { border-color: rgba(29, 27, 24, 0.3); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(29, 27, 24, 0.08); }
+input::placeholder, textarea::placeholder { color: var(--ink-3); opacity: 0.8; }
+select {
+  appearance: none; padding-right: 38px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%2357514a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center;
+}
+input[type="checkbox"] { width: 20px; min-height: 20px; height: 20px; margin: 0; padding: 0; accent-color: var(--ink); flex-shrink: 0; }
+
+.primary-button, .secondary-button, .ghost-button, .danger-button, .text-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border: 0; border-radius: 999px; padding: 0 20px; font-size: 15px; font-weight: 600;
+  line-height: 1.2; text-decoration: none; white-space: nowrap;
+  transition: background-color 0.15s, color 0.15s, transform 0.08s;
+}
+.primary-button:active:not(:disabled), .secondary-button:active:not(:disabled), .danger-button:active:not(:disabled) { transform: scale(0.98); }
+.primary-button { background: var(--ink); color: var(--paper); }
+.primary-button:hover:not(:disabled) { background: #36322c; }
+.secondary-button, .ghost-button { background: var(--tint); color: var(--ink); }
+.secondary-button:hover:not(:disabled), .ghost-button:hover:not(:disabled) { background: var(--tint-strong); }
+.danger-button { background: var(--cinnabar); color: #fbf3e8; }
+.danger-button:hover:not(:disabled) { background: #973120; }
+.text-button { background: transparent; color: var(--ink-2); padding: 0 12px; font-weight: 550; }
+.text-button:hover:not(:disabled) { color: var(--ink); background: var(--tint); }
+.icon-button {
+  display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 999px;
+  background: transparent; color: var(--ink-2); transition: background-color 0.15s, color 0.15s;
+}
+.icon-button:hover:not(:disabled) { background: var(--tint); color: var(--ink); }
+.icon-button.is-on { color: var(--cinnabar); }
+.full-width { width: 100%; }
+.muted { color: var(--ink-3); }
+.error-text { color: var(--cinnabar) !important; overflow-wrap: anywhere; }
+.format-badge { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--ink-3); }
+
+/* Inline feedback inside a page or sheet. */
+.network-feedback {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  margin: 16px 0 0; padding: 12px 14px; border-radius: var(--radius-sm);
+  font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; background: var(--tint); color: var(--ink-2);
+}
+.network-feedback > svg { margin-top: 3px; flex-shrink: 0; }
+.network-feedback.success { background: rgba(61, 106, 76, 0.1); color: var(--ok); }
+.network-feedback.error { background: var(--cinnabar-soft); color: #8e2f1e; }
+.network-feedback .text-button { min-height: 36px; padding: 0 10px; color: inherit; text-decoration: underline; }
+.settings-hint { font-size: 13px; line-height: 1.7; color: var(--ink-3); overflow-wrap: anywhere; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }

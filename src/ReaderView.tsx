@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { ArrowLeft, List, Search, Type } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 type ReaderChapterMetadata = {
@@ -330,7 +331,7 @@ export default function ReaderView({
     <div className="reader-backdrop" onClick={onClose}>
       <section className={`reader-shell reader-theme-${preferences.theme}`} onClick={(event) => event.stopPropagation()}>
         <header className="reader-toolbar">
-          <button className="ghost-button" onClick={onClose}>← 书架</button>
+          <button className="ghost-button" onClick={onClose} aria-label="← 书架"><ArrowLeft size={18} />书架</button>
           <div className="reader-title">
             <strong>{fallbackTitle || book.title}</strong>
             <small>{chapterLabel}</small>
@@ -342,11 +343,10 @@ export default function ReaderView({
               aria-label="在本章查找"
               aria-pressed={searchOpen}
             >
-              查找
+              <Search size={19} strokeWidth={1.8} />
             </button>
-            <button className="ghost-button reader-icon-button" onClick={() => setTocOpen((open) => !open)} aria-label="章节目录">目录</button>
-            <button className="ghost-button reader-icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-label="阅读设置">设置</button>
-            <span className="format-badge">{format.toUpperCase()}</span>
+            <button className="ghost-button reader-icon-button" onClick={() => setTocOpen((open) => !open)} aria-label="章节目录" aria-pressed={tocOpen}><List size={20} strokeWidth={1.8} /></button>
+            <button className="ghost-button reader-icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-label="阅读设置" aria-pressed={settingsOpen}><Type size={19} strokeWidth={1.8} /></button>
           </div>
         </header>
 

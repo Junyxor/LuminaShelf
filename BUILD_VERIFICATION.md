@@ -1,5 +1,26 @@
 # Release validation
 
+## Connection, download and UI review — 2026-10-18 (unreleased)
+
+Linux container, Rust 1.97, Node 22. `cargo test -p lumina-core` 76 passed (66 before this review) and
+`cargo test -p lumina-shelf-desktop --lib` 11 passed; Clippy `-D warnings` is clean for both.
+New hermetic tests cover mirror failover against a closed port, manual mode staying put,
+signed-out search without credentials, `LoginRequired` for signed-out downloads, a single
+503 retried to an intact file, an HTML login page rejected before it is written, error
+messages per cause, EPUB 2 cover extraction, and the 0600 session file round trip.
+The DoH fixtures need `NO_PROXY=.test,.invalid` when a host proxy is configured, because
+Reqwest otherwise sends fixture traffic to that proxy.
+
+A throwaway live check through the real stack (OS resolver, native roots, HTTPS proxy)
+failed over from `z-library.sk` (TLS failure from this network) to `z-library.ec` in 2.7 s,
+ran anonymous EAPI search and details, downloaded the 24,836,548-byte Gutenberg EPUB of
+*Pride and Prejudice* over four ranged connections through `DownloadManager`, and reported
+the signed-out Z-Library download as "需要登录 Z-Library 账户才能下载…". An authenticated
+Z-Library download was not run (no account), nor were Android, Windows or macOS builds.
+
+`npm run test:ui` passes at 320/390/768/1280 px against the redesigned UI
+(`CHROMIUM_PATH` selects a preinstalled Chromium when the pinned Playwright build is absent).
+
 ## 0.8.0 acceptance — 2026-10-16
 
 Target: same application ID/certificate as 0.7, version code 8000, min SDK24,

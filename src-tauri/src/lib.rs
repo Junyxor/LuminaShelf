@@ -705,6 +705,7 @@ pub fn run() {
             library_commands::set_book_favorite,
             library_commands::discover_books,
             library_commands::book_download_options,
+            library_commands::library_cover,
             library_commands::validate_library_file,
             library_commands::convert_library_book,
             library_commands::export_library_book,

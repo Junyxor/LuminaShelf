@@ -1,0 +1,65 @@
+/* Download queue: one calm row per book, the progress line carries the state. */
+.download-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 4px; border-bottom: 1px solid var(--rule); }
+.download-filters { display: flex; flex-wrap: wrap; gap: 0 22px; }
+.download-filters button { min-width: 0; padding: 0 2px; }
+.download-toolbar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.download-toolbar-actions .text-button { min-height: 40px; font-size: 13.5px; }
+.download-toolbar-actions .icon-button { width: 40px; height: 40px; min-height: 40px; min-width: 40px; }
+
+.download-preferences { margin: 16px 0 6px; border-radius: var(--radius); background: var(--surface); box-shadow: inset 0 0 0 1px var(--rule); }
+.download-preferences summary { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 16px; cursor: pointer; font-size: 14px; color: var(--ink-2); list-style: none; }
+.download-preferences summary::-webkit-details-marker { display: none; }
+.download-preferences summary::after { content: "调整"; margin-left: auto; color: var(--ink-3); font-size: 13px; }
+.download-preferences[open] summary::after { content: "收起"; }
+.download-preference-fields { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 16px 6px; }
+.download-preference-fields label { flex: 1; min-width: 140px; display: grid; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.download-preferences p { margin: 8px 16px 16px; font-size: 12.5px; line-height: 1.7; color: var(--ink-3); }
+.download-search { margin: 12px 0 4px; border-radius: 999px; background: var(--surface); }
+
+.download-list { display: grid; }
+.download-item {
+  display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 18px; padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: pan-y;
+}
+.download-thumb { width: 52px; padding-top: 2px; }
+/* Too small for a legible title: keep the cloth, format mark and rule. */
+.download-thumb .type-cover strong, .download-thumb .type-cover small { display: none; }
+.download-thumb .type-rule { margin-top: auto; margin-bottom: 18%; }
+.download-thumb .book-cover { box-shadow: 0 1px 1px rgba(40, 26, 12, 0.14), 0 6px 12px -8px rgba(40, 26, 12, 0.5); }
+.download-copy { min-width: 0; }
+.download-heading { display: flex; align-items: baseline; gap: 12px; }
+.download-heading h3 { flex: 1; min-width: 0; margin: 0; font-size: 15.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.download-state { flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.download-state.downloading, .download-state.connecting, .download-state.verifying { color: var(--ink); }
+.download-state.completed { color: var(--ok); }
+.download-state.failed { color: var(--cinnabar); }
+.download-state.paused, .download-state.cancelled, .download-state.pausing { color: var(--warn); }
+.download-meta { margin: 5px 0 12px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.progress-track { height: 3px; overflow: hidden; border-radius: 3px; background: var(--tint-strong); }
+.progress-track > span { display: block; height: 100%; border-radius: inherit; background: var(--ink); transition: width 0.4s ease-out; }
+.download-item[data-state="completed"] .progress-track > span { background: var(--ok); }
+.download-item[data-state="failed"] .progress-track > span { background: var(--cinnabar); }
+.download-item[data-state="paused"] .progress-track > span, .download-item[data-state="cancelled"] .progress-track > span { background: var(--warn); }
+.progress-track.indeterminate { background: linear-gradient(90deg, var(--tint-strong) 0 35%, rgba(29, 27, 24, 0.45) 48%, var(--tint-strong) 65%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+.download-transport, .download-note { margin: 9px 0 0; font-size: 12px; line-height: 1.7; color: var(--ink-3); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.download-copy .download-error-message {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--cinnabar-soft); color: #8e2f1e; font-size: 13.5px; line-height: 1.7; overflow-wrap: anywhere;
+}
+.download-row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.download-row-actions button { min-height: 48px; padding: 0 18px; font-size: 14px; }
+.download-error-details { margin-top: 8px; font-size: 12px; color: var(--ink-3); user-select: text; -webkit-user-select: text; }
+.download-error-details summary { display: inline-flex; align-items: center; min-height: 40px; cursor: pointer; }
+.download-error-details p { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--tint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
+.download-task-dialog h2 { padding-right: 40px; }
+
+@media (max-width: 720px) {
+  .download-toolbar { border-bottom: 0; }
+  .download-filters { width: 100%; gap: 0 18px; border-bottom: 1px solid var(--rule); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .download-filters button { flex-shrink: 0; }
+  .download-toolbar-actions { margin-left: -12px; }
+  .download-item { grid-template-columns: 42px minmax(0, 1fr); gap: 14px; padding: 20px 0; }
+  .download-thumb { width: 42px; }
+}
+@media (max-width: 400px) { .download-heading { flex-direction: column; gap: 2px; } }

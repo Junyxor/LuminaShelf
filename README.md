@@ -2,6 +2,25 @@
 
 LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri + React UI.
 
+## 未发布 — 连接、下载与新界面
+
+**下载失败**：Z-Library 登录状态此前只保存在内存里，应用重启（手机后台被系统回收尤其常见）后
+会悄悄退出登录，排队或继续的下载全部失败，却显示“检查网络”。现在登录凭据保存在应用配置目录
+（仅当前用户可读，不保存密码），切换镜像也不再退出登录。书源返回 408/429/5xx 时按退避重试，
+不再让整本书失败；以 200 返回的登录页、验证页或配额页不会被当成书籍写入，并显示书源原话。
+下载错误按实际原因说明：需要登录、站点无法连接、DNS、证书/TLS、超时、存储空间不足、文件无效、
+链接过期。Gutendex 目录不可用时，古登堡下载改用古登堡官网的固定文件地址。
+
+**无法连接**：未登录也能浏览和搜索 Z-Library（EAPI 本身允许匿名搜索）。“自动检测”模式下，
+当前站点连接失败、TLS 失败、返回 5xx 或验证页时，会自动切换到可用镜像并记住。桌面端“系统 DNS”
+改用操作系统解析器，遵循 VPN、分流 DNS、macOS 分域解析与 Windows NRPT；桌面端同时信任系统
+证书库，公司代理和杀毒软件的 HTTPS 检查不再导致所有连接失败。“自动检测并选择”网络时同时验证
+古登堡与 Z-Library。
+
+**界面**：重新设计为纸色、墨色与朱砂印章的书房风格：书架显示 EPUB 内嵌封面，无封面的书生成
+布面封面；找书页、书籍详情（手机为底部面板）、下载队列、分组设置与全屏阅读器统一了字体、
+间距和层级。
+
 ## 0.8.2 — 阅读流畅度与 PDF 修复
 
 滚动阅读只更新阅读器自身的进度，不再重绘整个书架；进度仍在停止滚动后保存。
@@ -116,7 +135,9 @@ Rust command bridge
 - Z-Library integration uses the EAPI provider path; no HTML/JS anti-bot challenge solver is included.
 - Remote hosts lists only become candidate address hints; they are never silently written to OS Hosts.
 - TLS hostname validation stays enabled even when an address hint is used.
-- Account passwords are not stored in generic SQLite metadata.
+- Account passwords are never stored. The Z-Library session key returned at login is kept in
+  `zlibrary-session.json` in the app config directory (mode 0600 on Unix) and deleted on logout.
+- Automatic mirror failover only runs in automatic mode; a site the user picked is never replaced.
 
 ## Development
 

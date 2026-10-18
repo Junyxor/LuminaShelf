@@ -104,8 +104,9 @@ export default function DnsSettings() {
   async function auto() {
     setBusy("auto"); setError(null); setReport(null);
     try {
-      const result = await invoke<{ policy: ResolverPolicy; report: Report; label: string }>("optimize_network");
-      adopt(result.policy); setApplied(result.policy); setReport(result.report); setMessage(`已选用 ${result.label}，实际书源连接正常`);
+      const result = await invoke<{ policy: ResolverPolicy; report: Report; zlibrary?: Report | null; label: string }>("optimize_network");
+      const zlibrary = result.zlibrary ? (result.zlibrary.usable ? "Z-Library 可连接" : "Z-Library 仍无法连接，可配置代理") : null;
+      adopt(result.policy); setApplied(result.policy); setReport(result.report); setMessage(`已选用 ${result.label}，实际书源连接正常${zlibrary ? `；${zlibrary}` : ""}`);
       const selected = profiles.find((item) => dnsKey(item.policy) === dnsKey(result.policy)); setEditingId(selected?.id || ""); setName(selected?.name || result.label);
     } catch (reason) { setError(String(reason)); } finally { setBusy(null); }
   }
@@ -115,16 +116,16 @@ export default function DnsSettings() {
   }
 
   return <section className="settings-section network-section" aria-label="网络设置">
-    <div className="network-heading"><div><h2>DNS 服务器</h2><p>保存自己的 DNS、DoH 或 DoT 配置，随时切换。</p></div><Wifi size={24} /></div>
-    <div className="profile-toolbar"><button className="primary-button" onClick={newProfile} disabled={!loaded || Boolean(busy)}><Plus size={19} />添加 DNS</button><button className="secondary-button" onClick={() => void testAll()} disabled={!profiles.length || Boolean(busy)}>{busy === "all" ? "正在测试…" : "测试全部"}</button></div>
+    <div className="network-heading"><div><h2>DNS 服务器</h2><p>保存自己的 DNS、DoH 或 DoT 配置，随时切换。连接不上书源时，先试试“自动检测并选择”。</p></div><Wifi size={22} /></div>
+    <div className="current-network"><span>当前连接</span><strong>{protocolName[applied.mode]} · {address(applied)}</strong></div>
+    <button className="secondary-button network-auto" onClick={() => void auto()} disabled={!loaded || Boolean(busy)}>{busy === "auto" ? "正在测试可用连接…" : "自动检测并选择"}</button>
+    <div className="profile-toolbar"><button className="primary-button" onClick={newProfile} disabled={!loaded || Boolean(busy)}><Plus size={18} />添加 DNS</button><button className="secondary-button" onClick={() => void testAll()} disabled={!profiles.length || Boolean(busy)}>{busy === "all" ? "正在测试…" : "测试全部"}</button></div>
     <div className="dns-profile-list">{profiles.length ? profiles.map((profile) => <article className="dns-profile" key={profile.id}>
       <div className="profile-title"><strong>{profile.name}</strong><span className="format-badge">{protocolName[profile.policy.mode]}</span>{dnsKey(profile.policy) === dnsKey(applied) ? <span className="profile-current"><Check size={16} />使用中</span> : null}</div>
       <p className="profile-address">{address(profile.policy)}</p>
       {rowReports[profile.id] ? <p className="profile-test-result" role="status">{rowReports[profile.id]}</p> : null}
       <div className="profile-actions"><button className="secondary-button" disabled={Boolean(busy)} aria-label={`使用 ${profile.name}`} onClick={() => void use(profile)}>使用</button><button className="text-button" disabled={Boolean(busy)} aria-label={`测试 ${profile.name}`} onClick={() => { setBusy(profile.id); void testProfile(profile).finally(() => setBusy(null)); }}>测试</button><button className="icon-button" disabled={Boolean(busy)} aria-label={`编辑 ${profile.name}`} onClick={() => edit(profile)}><Pencil size={19} /></button><button className="icon-button" disabled={Boolean(busy)} aria-label={`删除 ${profile.name}`} onClick={() => void remove(profile)}><Trash2 size={19} /></button></div>
     </article>) : <p className="settings-hint">还没有保存的配置。点击“添加 DNS”，填写自己的服务地址。</p>}</div>
-    <button className="secondary-button network-auto" onClick={() => void auto()} disabled={!loaded || Boolean(busy)}>{busy === "auto" ? "正在测试可用连接…" : "自动检测并选择"}</button>
-    <div className="current-network"><span>当前连接</span><strong>{protocolName[applied.mode]} · {address(applied)}</strong></div>
     <div id="dns-editor" className="dns-editor">
       <h3>{editingId ? "编辑配置" : "DNS 配置"}</h3>
       <label className="network-field"><span>配置名称</span><input aria-label="配置名称" placeholder="例如：我的 DNS / 家庭网络" value={name} onChange={(event) => { setName(event.target.value); setDirty(true); }} maxLength={80} /></label>

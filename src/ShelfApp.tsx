@@ -1,19 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import * as Dialog from "@radix-ui/react-dialog";
-import { BookOpen, Library, Search, Download, Settings, UserRound, Plus, ArrowLeft, ChevronRight, X, RefreshCw, Check, Heart, MoreHorizontal, Wifi, Globe, Megaphone } from "lucide-react";
+import { Library, Search, Download, Settings, UserRound, Plus, ArrowLeft, ChevronRight, X, RefreshCw, Check, Heart, Ellipsis, Wifi, Globe, Megaphone } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import NetworkSettings from "./DnsSettings";
 import PdfReader from "./PdfReader";
 import ReaderView from "./ReaderView";
 import ZLibraryAccount, { type ZLibraryAccountStatus } from "./AccountPage";
 import BookCover from "./BookCover";
+import BookCard, { FavoriteButton, SkeletonGrid } from "./BookCard";
 import MirrorPreferences from "./MirrorPreferences";
 import BookSourceHome from "./BookSourceHome";
 import BookDetailsDialog from "./BookDetailsDialog";
 import DownloadedBookActions from "./DownloadedBookActions";
 import AnnouncementsPage from "./AnnouncementsPage";
 import DownloadQueue, { activeDownload, useDownloadQueue } from "./DownloadQueue";
-import "./download-queue.css";
 import { openExternalFile } from "./external-files";
 import type { BookSummary, BookFormat, LibraryItem, ReadingProgress, ReaderBookMetadata, FavoriteBook } from "./types";
 
@@ -27,6 +27,7 @@ const navigation = [
   { id: "downloads", label: "下载", icon: Download },
   { id: "settings", label: "设置", icon: Settings },
 ] as const;
+const settingsPages: Page[] = ["account", "network", "mirrors", "announcements"];
 const pageTitle: Record<Page, string> = { library: "我的书架", search: "找一本书", downloads: "下载", settings: "设置", account: "书源账户", network: "DNS 与网络", mirrors: "书源镜像", announcements: "公告与更新" };
 const defaults: SettingsData = { defaultProvider: "", searchPageSize: 24 };
 function loadSettings(): SettingsData {
@@ -37,6 +38,8 @@ function readableFormat(book: BookSummary): BookFormat | null {
 }
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function favoriteSummary(item: FavoriteBook): BookSummary { const format = item.format as BookFormat | null; return { id: item.bookId, title: item.title, authors: item.authors, coverUrl: item.coverUrl, format, availableFormats: format ? [format] : [] }; }
+function providerName(id: string) { return id === "gutendex" ? "古登堡公版书" : "Z-Library"; }
+function byline(authors: string[], fallback: string) { return authors.join(" · ") || fallback; }
 
 export default function App() {
   const [page, setPage] = useState<Page>("library");
@@ -73,6 +76,12 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem("luminashelf.settings", JSON.stringify(settings)); }, [settings]);
   useEffect(() => { window.scrollTo(0, 0); }, [page]);
+  // Confirmations fade on their own; errors stay until read.
+  useEffect(() => {
+    if (!notice || notice.error) return;
+    const timer = setTimeout(() => setNotice(null), 4500);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     let active = true;
     void Promise.allSettled([
@@ -95,17 +104,18 @@ export default function App() {
       if (reader) { setReader(null); return true; }
       if (pdf) { setPdf(null); return true; }
       if (page === "downloads" && (window as Window & { luminaDownloadBack?: () => boolean }).luminaDownloadBack?.()) return true;
-      if (page !== "library") { setPage(["account", "network", "mirrors", "announcements"].includes(page) ? "settings" : "library"); return true; }
+      if (page !== "library") { setPage(settingsPages.includes(page) ? "settings" : "library"); return true; }
       return false;
     };
     (window as Window & { luminaBack?: () => boolean }).luminaBack = back;
     return () => { delete (window as Window & { luminaBack?: () => boolean }).luminaBack; };
   }, [page, reader, pdf, selectedBook, removing, managed]);
-  const needsLogin = provider === "zlibrary" && !account?.signedIn;
+  const signedOut = provider === "zlibrary" && !account?.signedIn;
   const visibleLibrary = useMemo(() => library.filter((item) => `${item.title} ${item.authors.join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [library, filter]);
   const visibleFavorites = useMemo(() => favorites.filter((item) => `${item.title} ${item.authors.join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [favorites, filter]);
   const favoriteKeys = useMemo(() => new Set(favorites.map((item) => `${item.providerId}:${item.bookId}`)), [favorites]);
   const pending = downloadQueue.tasks.filter(activeDownload).length;
+  const inSettings = page === "settings" || settingsPages.includes(page);
   function switchProvider(value: string) { searchId.current++; setProvider(value); setResults(null); setSelectedBook(null); setSearching(false); }
   async function refreshLibrary() {
     setLibraryLoading(true);
@@ -119,7 +129,7 @@ export default function App() {
     finally { setImporting(false); }
   }
   async function search(targetPage = 1) {
-    if (!query.trim() || !provider || needsLogin) return;
+    if (!query.trim() || !provider) return;
     const id = ++searchId.current; setSearching(true); setNotice(null);
     try { const found = await invoke<SearchResult>("search_books", { providerId: provider, text: query.trim(), page: targetPage, pageSize: settings.searchPageSize, formats: [] }); if (id === searchId.current) setResults(found); }
     catch (reason) { if (id === searchId.current) setNotice({ text: `搜索失败：${messageOf(reason)}`, error: true }); }
@@ -146,7 +156,7 @@ export default function App() {
     try {
       await invoke("validate_library_file", { libraryId: item.id });
       if (item.format === "pdf") { setPdf(item); return; }
-      if (!['epub', 'txt'].includes(item.format)) { await openExternalFile(item); return; }
+      if (!["epub", "txt"].includes(item.format)) { await openExternalFile(item); return; }
       const [book, progress] = await Promise.all([invoke<ReaderBookMetadata>("open_local_book_metadata", { path: item.path }), invoke<ReadingProgress | null>("reading_progress", { libraryId: item.id })]);
       let chapterId = progress?.locator; let offset = 0;
       if (chapterId?.startsWith("{")) {
@@ -177,42 +187,88 @@ export default function App() {
     try { await invoke(removeFile ? "delete_library_download" : "remove_library_item", { libraryId: removing.id }); setLibrary((current) => current.filter((item) => item.id !== removing.id)); setRemoving(null); }
     catch (reason) { setRemoving(null); setNotice({ text: messageOf(reason), error: true }); }
   }
+
+  const shelf = libraryLoading ? <SkeletonGrid label="正在整理书架…" />
+    : shelfView === "favorites" ? (visibleFavorites.length ? <div className="shelf-grid">{visibleFavorites.map((item) => {
+      const book = favoriteSummary(item);
+      return <BookCard key={`${item.providerId}:${item.bookId}`} title={item.title} subtitle={byline(item.authors, providerName(item.providerId))} openLabel={`查看收藏 ${item.title}`} onOpen={() => showDetails(book, item.providerId)}
+        cover={<BookCover title={item.title} authors={item.authors} url={item.coverUrl} format={item.format || ""} />}
+        action={<FavoriteButton active title={item.title} onToggle={() => void toggleFavorite(book, item.providerId)} />} />;
+    })}</div> : <section className="empty-state">
+      <div className="empty-icon" aria-hidden="true"><Heart size={26} strokeWidth={1.6} /></div>
+      <h2>{filter ? "收藏里没有这本书" : "收藏想读的书"}</h2>
+      <p>收藏只保存书籍条目，不占用空间；想离线阅读时再下载。</p>
+      {!filter ? <div><button className="primary-button" onClick={() => setPage("search")}>去找书</button></div> : null}
+    </section>)
+    : visibleLibrary.length ? <div className="shelf-grid">{visibleLibrary.map((item) => <BookCard key={item.id} title={item.title} subtitle={byline(item.authors, item.format.toUpperCase())}
+      openLabel={`阅读 ${item.title}`} busy={readerLoading === item.id} onOpen={() => readAfterPress(item)}
+      onContextMenu={(event) => { event.preventDefault(); cancelPress(); setManaged(item); }}
+      coverProps={{ onPointerDown: (event) => hold(item, event.clientX, event.clientY), onPointerUp: cancelPress, onPointerCancel: cancelPress, onPointerMove: (event) => { if (Math.hypot(event.clientX - pressOrigin.current.x, event.clientY - pressOrigin.current.y) > 12) cancelPress(); } }}
+      cover={<BookCover title={item.title} authors={item.authors} libraryId={item.id} url={bookCache.current[item.title]} format={item.format} />}
+      action={<button className="icon-button" aria-label={`管理下载 ${item.title}`} onClick={() => setManaged(item)}><Ellipsis size={19} /></button>} />)}</div>
+    : <section className="empty-state">
+      {filter ? <div className="empty-icon" aria-hidden="true"><Search size={24} strokeWidth={1.6} /></div> : <div className="empty-books" aria-hidden="true">{[0, 2, 1].map((tone) => <div key={tone} className={`book-cover tone-${tone}`}><div className="type-cover"><i className="type-rule" /></div></div>)}</div>}
+      <h2>{filter ? "没有找到这本书" : "书架还空着"}</h2>
+      <p>{filter ? "换个书名或作者的关键词试试。" : "导入手边的 EPUB、PDF、TXT，或者去找一本书。读到哪里，下次就从哪里接着读。"}</p>
+      {!filter ? <div><button className="primary-button" onClick={() => void importBooks()} disabled={importing}><Plus size={18} />导入书籍</button><button className="secondary-button" onClick={() => setPage("search")}>去找书</button></div> : null}
+    </section>;
+
   return <div className="app-shell">
     <aside className="sidebar">
-      <button className="brand" onClick={() => setPage("library")} aria-label="星书书架"><BookOpen size={28} strokeWidth={1.6} /><span>星书<small>LuminaShelf</small></span></button>
-      <nav aria-label="主导航">{navigation.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setPage(id)} className={page === id || ["account", "network", "mirrors", "announcements"].includes(page) && id === "settings" ? "nav-active" : ""} aria-current={page === id ? "page" : undefined}><Icon size={22} /><span>{label}</span>{id === "downloads" && pending > 0 ? <span className="count">{pending}</span> : null}</button>)}</nav>
-      <button className="account-entry" onClick={() => setPage("account")}><UserRound size={22} /><span>书源账户<small>{account?.signedIn ? "Z-Library 已登录" : "连接你的 Z-Library"}</small></span><ChevronRight size={18} /></button>
+      <button className="brand" onClick={() => setPage("library")} aria-label="星书书架"><span className="seal" aria-hidden="true">星</span><span className="brand-name"><strong>星书</strong><small>LuminaShelf</small></span></button>
+      <nav aria-label="主导航">{navigation.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setPage(id)} className={page === id || (inSettings && id === "settings") ? "nav-active" : ""} aria-current={page === id ? "page" : undefined}><Icon size={20} strokeWidth={1.8} /><span>{label}</span>{id === "downloads" && pending > 0 ? <span className="count" aria-hidden="true">{pending}</span> : null}</button>)}</nav>
+      <button className="account-entry" onClick={() => setPage("account")}><span className="account-avatar" aria-hidden="true"><UserRound size={18} strokeWidth={1.8} /></span><span className="account-text">书源账户<small><i className={`status-dot ${account?.signedIn ? "on" : ""}`} />{account?.signedIn ? "Z-Library 已登录" : "连接你的 Z-Library"}</small></span><ChevronRight size={16} /></button>
     </aside>
     <main className="main-content">
-      <header className="page-header"><div>{["account", "network", "mirrors", "announcements"].includes(page) ? <button className="text-button back-button" onClick={() => setPage("settings")}><ArrowLeft size={20} />设置</button> : <span className="mobile-brand">星书</span>}<h1>{pageTitle[page]}</h1></div>{page === "library" ? <button className="primary-button" onClick={() => void importBooks()} disabled={importing}><Plus size={20} />{importing ? "正在导入" : "导入书籍"}</button> : null}</header>
-      {notice ? <div className={`notice ${notice.error ? "error" : "success"}`} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={20} /></button>{notice.error && /搜索|下载|DNS|连接/.test(notice.text) ? <button className="text-button" onClick={() => setPage("settings")}>检查网络</button> : null}</div> : null}
+      <header className="page-header">
+        <div>
+          {settingsPages.includes(page) ? <button className="text-button back-button" onClick={() => setPage("settings")}><ArrowLeft size={18} />设置</button> : <span className="mobile-brand"><span className="seal" aria-hidden="true">星</span>星书</span>}
+          <h1>{pageTitle[page]}</h1>
+        </div>
+        {page === "library" ? <button className="primary-button" onClick={() => void importBooks()} disabled={importing}><Plus size={18} />{importing ? "正在导入" : "导入书籍"}</button> : null}
+      </header>
+      {notice ? <div className={`notice ${notice.error ? "error" : "success"}`} role={notice.error ? "alert" : "status"}><span>{notice.text}</span>{notice.error && /搜索|下载|DNS|连接/.test(notice.text) ? <button className="text-button" onClick={() => { setNotice(null); setPage("network"); }}>检查网络</button> : null}<button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={18} /></button></div> : null}
+
       {page === "library" ? <>
-        <button className="announcement-entry" onClick={() => setPage("announcements")}><Megaphone size={18} />公告栏 · 项目动态与书源公告<ChevronRight size={18} /></button>
         <div className="shelf-tabs" role="tablist" aria-label="书架内容"><button role="tab" aria-selected={shelfView === "downloaded"} onClick={() => setShelfView("downloaded")}>已下载 <span>{library.length}</span></button><button role="tab" aria-selected={shelfView === "favorites"} onClick={() => setShelfView("favorites")}>收藏 <span>{favorites.length}</span></button></div>
-        {library.length + favorites.length > 0 ? <div className="library-tools"><label className="search-input"><Search size={20} /><input aria-label="搜索书架" placeholder="在书架中找书" value={filter} onChange={(event) => setFilter(event.target.value)} /></label><button className="icon-button" aria-label="刷新书架" onClick={() => void refreshLibrary()}><RefreshCw size={20} /></button></div> : null}
-        {libraryLoading ? <div className="loading-state" role="status">正在整理书架…</div> : shelfView === "favorites" ? visibleFavorites.length ? <div className="shelf-grid">{visibleFavorites.map((item) => <article className="shelf-book" key={`${item.providerId}:${item.bookId}`}><button className="cover-button" aria-label={`查看收藏 ${item.title}`} onClick={() => showDetails(favoriteSummary(item), item.providerId)}><BookCover title={item.title} authors={item.authors} url={item.coverUrl} format={item.format || ""} /></button><h3>{item.title}</h3><p>{item.authors.join(" · ") || "作者未提供"}</p><div className="shelf-actions"><button className="text-button" onClick={() => showDetails(favoriteSummary(item), item.providerId)}>详情<ChevronRight size={17} /></button><button className="icon-button" aria-label={`取消收藏 ${item.title}`} onClick={() => void toggleFavorite(favoriteSummary(item), item.providerId)}><Heart size={19} fill="currentColor" /></button></div></article>)}</div> : <section className="empty-state"><Heart size={32} /><h2>收藏想读的书</h2><p>收藏只保存书籍条目，需要离线阅读时再下载。</p><button className="primary-button" onClick={() => setPage("search")}>去找书</button></section> : visibleLibrary.length ? <div className="shelf-grid">{visibleLibrary.map((item) => <article className="shelf-book" key={item.id} onContextMenu={(event) => { event.preventDefault(); cancelPress(); setManaged(item); }}><button className="cover-button" onClick={() => readAfterPress(item)} onPointerDown={(event) => hold(item, event.clientX, event.clientY)} onPointerUp={cancelPress} onPointerCancel={cancelPress} onPointerMove={(event) => { if (Math.hypot(event.clientX - pressOrigin.current.x, event.clientY - pressOrigin.current.y) > 12) cancelPress(); }} aria-label={`阅读 ${item.title}`} disabled={readerLoading === item.id}><BookCover title={item.title} authors={item.authors} url={bookCache.current[item.title]} format={item.format} /></button><h3>{item.title}</h3><p>{item.authors.join(" · ") || item.format.toUpperCase()}</p><div className="shelf-actions"><button className="text-button" onClick={() => void openBook(item)} disabled={readerLoading === item.id}>{readerLoading === item.id ? "打开中" : "阅读"}<ChevronRight size={16} /></button><button className="icon-button" aria-label={`管理下载 ${item.title}`} onClick={() => setManaged(item)}><MoreHorizontal size={21} /></button></div></article>)}</div> : <section className="empty-state"><BookOpen size={36} strokeWidth={1.4} /><h2>{filter ? "没有找到这本书" : "把第一本书放进书架"}</h2><p>{filter ? "试试书名或作者的其他关键词。" : "导入 EPUB、PDF 或 TXT，随时接着读。"}</p>{!filter ? <div><button className="primary-button" onClick={() => void importBooks()} disabled={importing}><Plus size={18} />导入书籍</button><button className="secondary-button" onClick={() => setPage("search")}>去找书<ChevronRight size={18} /></button></div> : null}</section>}
+        {library.length + favorites.length > 0 ? <div className="library-tools"><label className="search-input"><Search size={18} /><input aria-label="搜索书架" placeholder="在书架中找书" value={filter} onChange={(event) => setFilter(event.target.value)} /></label><button className="icon-button" aria-label="刷新书架" onClick={() => void refreshLibrary()}><RefreshCw size={18} /></button></div> : null}
+        {shelf}
+        <button className="announcement-entry" onClick={() => setPage("announcements")}><Megaphone size={16} />公告栏 · 项目动态与书源公告<ChevronRight size={16} /></button>
       </> : null}
+
       {page === "search" ? <>
-        <form className="book-search" onSubmit={submitSearch}><label className="search-input"><Search size={20} /><input aria-label="书名或作者" placeholder="书名、作者或关键词" value={query} onChange={(event) => setQuery(event.target.value)} /></label><button className="primary-button" disabled={searching || !query.trim() || needsLogin}>{searching ? "正在搜索" : "搜索"}</button></form>
-        <div className="source-picker" role="group" aria-label="选择书源">{providers.filter((item) => item.capabilities.searchable).map((item) => <button key={item.id} className={provider === item.id ? "selected" : ""} onClick={() => switchProvider(item.id)}>{item.id === "gutendex" ? "古登堡公版书" : "Z-Library"}{provider === item.id ? <Check size={16} /> : null}</button>)}</div>
-        {needsLogin ? <div className="source-login"><p>可以浏览热门书籍并收藏；搜索和下载需要书源账户。</p><button className="text-button" onClick={() => setPage("account")}>登录账户<ChevronRight size={18} /></button></div> : null}
-        {searching ? <div className="loading-state" role="status">正在找书…</div> : results ? <><div className="results-heading"><span>{results.items.length ? `第 ${results.page} 页 · ${results.items.length} 本书` : "没有匹配的书籍"}</span><div><button className="secondary-button" disabled={results.page <= 1 || searching} onClick={() => void search(results.page - 1)}>上一页</button><button className="secondary-button" disabled={!results.hasNext || searching} onClick={() => void search(results.page + 1)}>下一页</button></div></div><div className="shelf-grid search-results">{results.items.map((book) => {
-          const task = downloadQueue.tasks.find((task) => task.providerId === provider && task.bookId === book.id && activeDownload(task));
-          return <article className="shelf-book" key={book.id}><button className="cover-button" onClick={() => showDetails(book)} aria-label={`查看 ${book.title}`}><BookCover title={book.title} authors={book.authors} url={book.coverUrl} format={readableFormat(book) || ""} /></button><h3>{book.title}</h3><p>{book.authors.join(" · ") || "作者未提供"}</p><div className="shelf-actions"><button className="text-button" aria-label={`${favoriteKeys.has(`${provider}:${book.id}`) ? "取消收藏" : "收藏"} ${book.title}`} onClick={() => void toggleFavorite(book)}><Heart size={18} fill={favoriteKeys.has(`${provider}:${book.id}`) ? "currentColor" : "none"} />{favoriteKeys.has(`${provider}:${book.id}`) ? "已收藏" : "收藏"}</button><button className="icon-button" aria-label={`下载 ${book.title}`} disabled={task?.state === "downloading" || task?.state === "queued"} onClick={() => showDetails(book)}><Download size={19} /></button></div></article>;
-        })}</div></> : provider ? <BookSourceHome key={`${provider}:${account?.signedIn}:${account?.origin}`} providerId={provider} favorites={favoriteKeys} onSelect={showDetails} onFavorite={(book) => void toggleFavorite(book)} /> : null}
+        <form className="book-search" onSubmit={submitSearch}><label className="search-input"><Search size={19} /><input aria-label="书名或作者" placeholder="书名、作者或关键词" value={query} onChange={(event) => setQuery(event.target.value)} /></label><button className="primary-button" disabled={searching || !query.trim()}>{searching ? "正在搜索" : "搜索"}</button></form>
+        <div className="source-picker" role="group" aria-label="选择书源">{providers.filter((item) => item.capabilities.searchable).map((item) => <button key={item.id} type="button" className={provider === item.id ? "selected" : ""} aria-pressed={provider === item.id} onClick={() => switchProvider(item.id)}>{provider === item.id ? <Check size={15} /> : null}{providerName(item.id)}</button>)}</div>
+        {signedOut ? <div className="source-login"><p>未登录也可以浏览和搜索，下载需要登录书源账户。</p><button className="text-button" onClick={() => setPage("account")}>登录<ChevronRight size={16} /></button></div> : null}
+        {searching ? <SkeletonGrid label="正在找书…" count={6} /> : results ? <>
+          <div className="results-heading"><span>{results.items.length ? `第 ${results.page} 页 · ${results.items.length} 本` : "没有匹配的书籍，换个关键词试试"}</span><div><button className="secondary-button" disabled={results.page <= 1 || searching} onClick={() => void search(results.page - 1)}>上一页</button><button className="secondary-button" disabled={!results.hasNext || searching} onClick={() => void search(results.page + 1)}>下一页</button></div></div>
+          <div className="shelf-grid search-results">{results.items.map((book) => <BookCard key={book.id} title={book.title} subtitle={byline(book.authors, "作者未提供")} openLabel={`查看 ${book.title}`} onOpen={() => showDetails(book)}
+            cover={<BookCover title={book.title} authors={book.authors} url={book.coverUrl} format={readableFormat(book) || ""} />}
+            action={<FavoriteButton active={favoriteKeys.has(`${provider}:${book.id}`)} title={book.title} onToggle={() => void toggleFavorite(book)} />} />)}</div>
+        </> : provider ? <BookSourceHome key={`${provider}:${account?.signedIn}:${account?.origin}`} providerId={provider} favorites={favoriteKeys} onSelect={showDetails} onFavorite={(book) => void toggleFavorite(book)} /> : null}
       </> : null}
+
       {page === "downloads" ? <DownloadQueue queue={downloadQueue} onRead={(item) => void openBook(item)} onManageFile={setManaged} onFind={() => setPage("search")} /> : null}
+
       {page === "settings" ? <div className="settings-content">
-        <section className="settings-section"><h2>账户与书源</h2><button className="settings-row" onClick={() => setPage("account")}><UserRound size={23} /><span><strong>Z-Library 账户</strong><small>{account?.signedIn ? "已登录，点击管理账户" : "登录以搜索和下载书籍"}</small></span><ChevronRight size={20} /></button><label className="settings-field"><span>默认书源</span><select value={settings.defaultProvider} onChange={(event) => setSettings({ ...settings, defaultProvider: event.target.value })}><option value="">自动选择</option>{providers.map((item) => <option value={item.id} key={item.id}>{item.id === "gutendex" ? "古登堡公版书" : "Z-Library"}</option>)}</select></label><label className="settings-field"><span>每页搜索结果</span><select value={settings.searchPageSize} onChange={(event) => setSettings({ ...settings, searchPageSize: Number(event.target.value) })}>{[12, 24, 36, 50].map((count) => <option key={count} value={count}>{count} 本</option>)}</select></label></section>
-        <section className="settings-section"><h2>连接与内容</h2><button className="settings-row" onClick={() => setPage("network")}><Wifi size={23} /><span><strong>DNS 服务器与网络</strong><small>添加、编辑、测试自己的 DNS / DoH 配置</small></span><ChevronRight size={20} /></button><button className="settings-row" onClick={() => setPage("mirrors")}><Globe size={23} /><span><strong>书源镜像与发布源</strong><small>内置候选、拉取检测、手动选择</small></span><ChevronRight size={20} /></button><button className="settings-row" onClick={() => setPage("announcements")}><Megaphone size={23} /><span><strong>公告与检查更新</strong><small>星书公告、书源官网公告、版本信息</small></span><ChevronRight size={20} /></button></section>
-        <section className="settings-section about-section"><h2>关于星书</h2><p>LuminaShelf {version}</p><p>一个用来找书、收书和阅读的本地书架。</p><a href="https://github.com/Junyxor/LuminaShelf" target="_blank" rel="noreferrer">项目与开源信息<ChevronRight size={16} /></a></section>
+        <section className="settings-section"><h2>账户与书源</h2><div className="group">
+          <button className="settings-row" onClick={() => setPage("account")}><UserRound size={20} strokeWidth={1.8} /><span><strong>Z-Library 账户</strong><small>{account?.signedIn ? "已登录" : "登录后可以下载书籍"}</small></span><ChevronRight size={18} /></button>
+          <label className="settings-field"><span>默认书源</span><select value={settings.defaultProvider} onChange={(event) => setSettings({ ...settings, defaultProvider: event.target.value })}><option value="">自动选择</option>{providers.map((item) => <option value={item.id} key={item.id}>{providerName(item.id)}</option>)}</select></label>
+          <label className="settings-field"><span>每页搜索结果</span><select value={settings.searchPageSize} onChange={(event) => setSettings({ ...settings, searchPageSize: Number(event.target.value) })}>{[12, 24, 36, 50].map((count) => <option key={count} value={count}>{count} 本</option>)}</select></label>
+        </div></section>
+        <section className="settings-section"><h2>连接</h2><div className="group">
+          <button className="settings-row" onClick={() => setPage("network")}><Wifi size={20} strokeWidth={1.8} /><span><strong>DNS 服务器与网络</strong><small>DoH、DoT、代理与应用内 Hosts</small></span><ChevronRight size={18} /></button>
+          <button className="settings-row" onClick={() => setPage("mirrors")}><Globe size={20} strokeWidth={1.8} /><span><strong>书源镜像与发布源</strong><small>{account?.origin ? new URL(account.origin).hostname : "检测与切换 Z-Library 站点"}{account?.originMode === "automatic" ? " · 自动切换" : ""}</small></span><ChevronRight size={18} /></button>
+          <button className="settings-row" onClick={() => setPage("announcements")}><Megaphone size={20} strokeWidth={1.8} /><span><strong>公告与检查更新</strong><small>当前版本 {version}</small></span><ChevronRight size={18} /></button>
+        </div></section>
+        <section className="about-section"><p><strong>星书</strong> · LuminaShelf {version}</p><p>找书、收书、读书的本地书架。</p><a href="https://github.com/Junyxor/LuminaShelf" target="_blank" rel="noreferrer">项目主页与开源说明<ChevronRight size={15} /></a></section>
       </div> : null}
       {page === "account" ? <ZLibraryAccount initialStatus={account} onStatusChange={setAccount} /> : null}
       {page === "network" ? <div className="settings-content"><NetworkSettings /></div> : null}
       {page === "mirrors" ? <div className="settings-content"><MirrorPreferences onSelected={(status) => { setAccount(status); setResults(null); }} /></div> : null}
       {page === "announcements" ? <AnnouncementsPage version={version} /> : null}
     </main>
-    <nav className="mobile-nav" aria-label="手机主导航">{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-current={page === id ? "page" : undefined} className={page === id || ["account", "network", "mirrors", "announcements"].includes(page) && id === "settings" ? "nav-active" : ""} onClick={() => setPage(id)}><Icon size={23} strokeWidth={1.7} /><span>{label}</span></button>)}</nav>
+    <nav className="mobile-nav" aria-label="手机主导航">{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-current={page === id ? "page" : undefined} className={page === id || (inSettings && id === "settings") ? "nav-active" : ""} onClick={() => setPage(id)}><Icon size={22} strokeWidth={1.7} /><span>{label}</span>{id === "downloads" && pending > 0 ? <span className="count" aria-hidden="true">{pending}</span> : null}</button>)}</nav>
     <BookDetailsDialog book={selectedBook} providerId={selectedProvider} favorite={Boolean(selectedBook && favoriteKeys.has(`${selectedProvider}:${selectedBook.id}`))} signedIn={Boolean(account?.signedIn)} onClose={() => setSelectedBook(null)} onFavorite={(book) => void toggleFavorite(book, selectedProvider)} onDownload={(book, format) => void downloadBook(book, format, selectedProvider)} onLogin={() => { setSelectedBook(null); setPage("account"); }} />
     <DownloadedBookActions item={managed} onClose={() => setManaged(null)} onRead={(item) => void openBook(item)} onRemove={(item) => { setRemoveFile(false); setRemoving(item); }} onDelete={(item) => { setRemoveFile(true); setRemoving(item); }} onRetry={(item) => showDetails({ id: item.sourceBookId!, title: item.title, authors: item.authors, format: item.format as BookFormat, availableFormats: [item.format as BookFormat] }, item.sourceProvider!)} onConverted={(item) => setLibrary((current) => [item, ...current.filter((value) => value.id !== item.id)])} />
     <Dialog.Root open={Boolean(removing)} onOpenChange={(open) => { if (!open) setRemoving(null); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="confirm-dialog"><Dialog.Title>{removeFile ? "删除下载文件？" : "从书架移除？"}</Dialog.Title><Dialog.Description>“{removing?.title}”将从已下载书架移除。{removeFile ? "应用管理的本地副本会删除，收藏会保留。" : "本地文件会保留。"}</Dialog.Description><div className="dialog-actions"><Dialog.Close className="secondary-button">取消</Dialog.Close><button className="danger-button" onClick={() => void removeBook()}>{removeFile ? "删除文件" : "移除"}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>

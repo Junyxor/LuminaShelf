@@ -27,7 +27,10 @@ struct PackageData {
     manifest: PackageManifest,
     spine: Vec<String>,
     toc_id: Option<String>,
+    cover_id: Option<String>,
 }
+
+const MAX_COVER_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct TocEntry {
@@ -217,6 +220,60 @@ fn open_epub_chapter(path: &Path, chapter_id: &str) -> Result<ReaderChapter> {
         title,
         text,
     })
+}
+
+/// The cover image an EPUB declares (EPUB 3 `cover-image`, or the EPUB 2 `cover` meta).
+pub fn epub_cover(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>> {
+    let path = canonical_reader_path(path)?;
+    if reader_extension(&path) != "epub" {
+        return Ok(None);
+    }
+    let (mut archive, package_dir, package) = load_epub_package(&path)?;
+    let image = |item: &&ManifestItem| {
+        item.media_type
+            .as_deref()
+            .is_some_and(|kind| kind.starts_with("image/"))
+    };
+    let declared = package
+        .manifest
+        .values()
+        .filter(image)
+        .find(|item| {
+            item.properties
+                .as_deref()
+                .is_some_and(|value| value.split_whitespace().any(|part| part == "cover-image"))
+        })
+        .or_else(|| {
+            package
+                .cover_id
+                .as_ref()
+                .and_then(|id| package.manifest.get(id))
+                .filter(image)
+        })
+        .or_else(|| {
+            package
+                .manifest
+                .iter()
+                .filter(|(_, item)| image(item))
+                .find(|(id, item)| {
+                    id.to_ascii_lowercase().contains("cover")
+                        || item.href.to_ascii_lowercase().contains("cover")
+                })
+                .map(|(_, item)| item)
+        });
+    let Some(item) = declared else {
+        return Ok(None);
+    };
+    let entry = normalize_zip_path(&package_dir.join(percent_decode_path(&item.href)));
+    let Ok(file) = archive.by_name(&entry) else {
+        return Ok(None);
+    };
+    if file.size() > MAX_COVER_BYTES {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(file.size() as usize);
+    file.take(MAX_COVER_BYTES).read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 fn load_epub_package(path: &Path) -> Result<(ZipArchive<File>, PathBuf, PackageData)> {
@@ -460,11 +517,18 @@ fn parse_package(xml: &str) -> Result<PackageData> {
         .filter(|node| node.has_tag_name("itemref"))
         .filter_map(|node| node.attribute("idref").map(str::to_string))
         .collect();
+    let cover_id = document
+        .descendants()
+        .filter(|node| node.has_tag_name("meta"))
+        .find(|node| node.attribute("name") == Some("cover"))
+        .and_then(|node| node.attribute("content"))
+        .map(str::to_string);
     Ok(PackageData {
         title,
         manifest,
         spine,
         toc_id,
+        cover_id,
     })
 }
 
@@ -600,6 +664,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn epub2_cover_meta_yields_the_image_bytes() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("lumina-cover-{}.epub", uuid::Uuid::new_v4()));
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("META-INF/container.xml", options).unwrap();
+        zip.write_all(br#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#).unwrap();
+        zip.start_file("OEBPS/content.opf", options).unwrap();
+        zip.write_all(br#"<package xmlns="http://www.idpf.org/2007/opf"><metadata><meta name="cover" content="art"/></metadata><manifest><item id="art" href="images/front%20page.jpg" media-type="image/jpeg"/></manifest><spine/></package>"#).unwrap();
+        zip.start_file("OEBPS/images/front page.jpg", options)
+            .unwrap();
+        zip.write_all(b"\xff\xd8fixture").unwrap();
+        zip.finish().unwrap();
+        assert_eq!(epub_cover(&path).unwrap().unwrap(), b"\xff\xd8fixture");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn fallback_markup_strip_keeps_text() {
         assert_eq!(
             strip_markup_fallback("<p>Hello <b>world</b></p>"),
@@ -695,6 +777,7 @@ mod tests {
             ]),
             spine: vec!["ch1".to_string(), "ch2".to_string()],
             toc_id: None,
+            cover_id: None,
         };
         let toc = HashMap::from([("Text/ch1.xhtml".to_string(), "第一章".to_string())]);
         let chapters = epub_chapter_metadata(&package, &toc);

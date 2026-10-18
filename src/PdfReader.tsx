@@ -4,8 +4,8 @@ import type {
   PDFDocumentLoadingTask,
   PDFDocumentProxy,
 } from "pdfjs-dist";
+import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import "./pdf-light.css";
 
 const PDF_RANGE_CHUNK_SIZE = 64 * 1024;
 const PDF_RANGE_LENGTH_PREFIX_BYTES = 8;
@@ -236,7 +236,7 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
     <div className="pdf-backdrop" onClick={onClose}>
       <section className="pdf-shell" onClick={(event) => event.stopPropagation()}>
         <header className="pdf-toolbar">
-          <button className="ghost-button" onClick={onClose}>← 书架</button>
+          <button className="ghost-button" onClick={onClose} aria-label="← 书架"><ArrowLeft size={18} />书架</button>
           <div className="pdf-title">
             <strong>{title}</strong>
             <small>{numPages ? `第 ${pageNumber} / ${numPages} 页` : "正在载入 PDF…"}</small>

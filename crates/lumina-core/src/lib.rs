@@ -25,7 +25,7 @@ pub use provider::{
     ZLibraryProfile, ZLibraryProvider, ZLibrarySession,
 };
 pub use reader::{
-    open_book, open_book_chapter, open_book_metadata, ReaderBook, ReaderBookMetadata,
+    epub_cover, open_book, open_book_chapter, open_book_metadata, ReaderBook, ReaderBookMetadata,
     ReaderChapter, ReaderChapterMetadata,
 };
 pub use storage::StateStore;
