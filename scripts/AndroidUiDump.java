@@ -17,25 +17,26 @@ public final class AndroidUiDump {
         return value == null ? "" : value.toString().replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", "");
     }
 
-    private static void node(XmlSerializer xml, AccessibilityNodeInfo info, Rect viewport) throws Exception {
+    private static void node(XmlSerializer xml, AccessibilityNodeInfo info, Rect viewport, boolean includeInvisible) throws Exception {
         xml.startTag("", "node");
         xml.attribute("", "text", text(info.getText()));
         xml.attribute("", "content-desc", text(info.getContentDescription()));
         xml.attribute("", "class", text(info.getClassName()));
         xml.attribute("", "package", text(info.getPackageName()));
         xml.attribute("", "enabled", Boolean.toString(info.isEnabled()));
+        xml.attribute("", "visible", Boolean.toString(info.isVisibleToUser()));
         Rect bounds = new Rect();
         info.getBoundsInScreen(bounds);
         if (!bounds.intersect(viewport)) bounds.setEmpty();
         xml.attribute("", "bounds", "[" + bounds.left + "," + bounds.top + "][" + bounds.right + "," + bounds.bottom + "]");
         for (int index = 0; index < info.getChildCount(); index++) {
             AccessibilityNodeInfo child = info.getChild(index);
-            if (child != null && child.isVisibleToUser()) node(xml, child, viewport);
+            if (child != null && (includeInvisible || child.isVisibleToUser())) node(xml, child, viewport, includeInvisible);
         }
         xml.endTag("", "node");
     }
 
-    private static byte[] snapshot(UiAutomation automation) throws Exception {
+    private static byte[] snapshot(UiAutomation automation, boolean includeInvisible) throws Exception {
         automation.clearCache();
         AccessibilityNodeInfo root = null;
         for (int attempt = 0; attempt < 20 && root == null; attempt++) {
@@ -51,7 +52,7 @@ public final class AndroidUiDump {
         xml.startTag("", "hierarchy");
         Rect viewport = new Rect();
         root.getBoundsInScreen(viewport);
-        node(xml, root, viewport);
+        node(xml, root, viewport, includeInvisible);
         xml.endTag("", "hierarchy");
         xml.endDocument();
         return output.toByteArray();
@@ -77,9 +78,9 @@ public final class AndroidUiDump {
                                 running = false;
                             } else if ("PING".equals(command)) {
                                 response = "READY".getBytes("UTF-8");
-                            } else if ("DUMP".equals(command)) {
+                            } else if ("DUMP".equals(command) || "DUMP_ALL".equals(command)) {
                                 try {
-                                    response = snapshot(automation);
+                                    response = snapshot(automation, "DUMP_ALL".equals(command));
                                 } catch (Exception error) {
                                     response = ("ERROR " + error.getClass().getSimpleName()).getBytes("UTF-8");
                                 }
@@ -94,7 +95,7 @@ public final class AndroidUiDump {
                 }
             } else {
                 try (FileOutputStream output = new FileOutputStream(args[0])) {
-                    output.write(snapshot(automation));
+                    output.write(snapshot(automation, false));
                 }
                 System.out.println("UI hierarchy dumped to: " + args[0]);
             }

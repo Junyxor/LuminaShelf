@@ -34,6 +34,11 @@ $identity = "package: name='app.luminashelf.client' versionCode='$versionCode' v
 if (-not $manifest.Contains($identity)) { throw 'Wrong package or version' }
 if ($manifest -notmatch "sdkVersion:'24'" -or $manifest -notmatch "targetSdkVersion:'36'") { throw 'Wrong minimum or target SDK' }
 if ($manifest -match 'application-debuggable') { throw 'Release APK is debuggable' }
+$manifestTree = & $aapt dump xmltree --file AndroidManifest.xml $ApkPath
+if ($LASTEXITCODE -ne 0) { throw 'APK application manifest could not be read' }
+if (($manifestTree -join "`n") -notmatch 'android:extractNativeLibs[^\r\n]*=(?:true|\(type 0x12\)0xffffffff)(?:\s|$)') {
+    throw 'Native libraries must be extracted at installation so the APK can store them compressed'
+}
 $signature = & $java -jar $signer verify --verbose --print-certs $ApkPath
 if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed' }
 $signatureText = $signature -join "`n"
@@ -59,6 +64,7 @@ try {
             'x86_64' = @{ elfClass = 2; machine = 62 }
         }[$abi]
         if ($null -eq $architecture) { throw "Unexpected native architecture: $abi" }
+        if ($entry.CompressedLength -ge $entry.Length) { throw "$abi native library is not compressed" }
         $destination = Join-Path $temporary "$abi.so"
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
         $bytes = [IO.File]::ReadAllBytes($destination)
@@ -90,7 +96,7 @@ try {
             if (-not ($exports -match ($symbol + '$'))) { throw "$abi Android JNI export is missing: $symbol" }
         }
         if (-not ($exports -match 'Java_app_luminashelf_client_DownloadNative_pauseAll$')) { throw "$abi background download JNI callback is missing" }
-        $libraries += @{ abi = $abi; loadAlignments = $alignments; jniExportsVerified = $true; nativeMethods = $nativeMethods.Count; bytes = $entry.Length }
+        $libraries += @{ abi = $abi; loadAlignments = $alignments; jniExportsVerified = $true; nativeMethods = $nativeMethods.Count; bytes = $entry.Length; compressedBytes = $entry.CompressedLength }
     }
 } finally {
     $archive.Dispose()
@@ -113,7 +119,7 @@ if (-not $ExpectedCommit) {
     $ExpectedCommit = $ExpectedCommit.Trim()
 }
 if ($build.sourceCommit -ne $ExpectedCommit) { throw 'Build metadata does not match the expected source revision' }
-$report = @{ passed = $true; variant = $Variant; version = $version; versionCode = $versionCode; minSdk = 24; targetSdk = 36; debuggable = $false; signatureV2 = $true; signatureV3 = $true; zipAligned16KB = $true; sha256 = $hash; certificateSha256 = $certificate; libraries = $libraries; sourceCommit = $build.sourceCommit; bytes = $build.bytes }
+$report = @{ passed = $true; variant = $Variant; version = $version; versionCode = $versionCode; minSdk = 24; targetSdk = 36; debuggable = $false; extractNativeLibs = $true; compressedNativeLibs = $true; signatureV2 = $true; signatureV3 = $true; zipAligned16KB = $true; sha256 = $hash; certificateSha256 = $certificate; libraries = $libraries; sourceCommit = $build.sourceCommit; bytes = $build.bytes }
 New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ReportPath))) -Force | Out-Null
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReportPath -Encoding utf8
 $report | ConvertTo-Json -Depth 8

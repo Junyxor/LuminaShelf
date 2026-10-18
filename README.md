@@ -2,6 +2,12 @@
 
 LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri + React UI.
 
+## 0.8.1 — 手机安装包修复
+
+64 位手机推荐下载 **ARM64**，旧 32 位手机选择 ARMv7，不确定时选择通用版。
+x86 / x86_64 用于 Intel/AMD 设备与模拟器。所有安装包压缩本地库，降低下载体积，
+继续使用原签名，支持覆盖安装。
+
 ## 0.8.0 — 可恢复的下载队列
 
 下载任务保存在 SQLite，断线自动按已保存字节重试；暂停、取消或应用进程退出后，
@@ -19,9 +25,8 @@ DoH 增加遵循 TTL 的有界缓存、并发查询合并，以及快速地址�
 应用 DNS 设置时清空解析缓存并重建连接池；完整自定义地址、引导 IP 与严格 TLS 校验保留。
 参考 Olib Mobile 的任务管理交互，未复制其代码或私有依赖，见 [参考核查](docs/olib-mobile-reference.md)。
 
-GitHub Actions 分别提供 x86（32位）、x86_64（64位）和通用 APK。
-通用版包含 arm64-v8a、armeabi-v7a、x86、x86_64；三份包使用相同应用标识与签名。
-普通 ARM 手机可使用通用版，Intel/AMD Android 设备可选对应的较小独立包。
+GitHub Actions 现在分别提供手机 ARM64、ARMv7、通用版和 Intel/AMD 的 x86、x86_64 APK。
+通用版包含全部四种架构；五份包使用相同应用标识与签名。
 
 ## 0.7.0 — 收藏、书源与下载管理
 
@@ -133,12 +138,12 @@ A Windows installer can be built with:
 npm run tauri -- build --bundles nsis
 ```
 
-The `Desktop Package` GitHub Actions workflow can also be started manually. Pushing a `v*` tag builds the Windows installer and publishes it to the matching GitHub Release.
+The `Desktop Package` GitHub Actions workflow can also be started manually. Pushing a `v*` tag builds the Windows installer as an Actions artifact; Android CI owns Release publication.
 
 Builds default to two Cargo jobs and two Gradle workers. UI checks run headlessly;
 `scripts/check-native.mjs` exercises a hidden Windows WebView without opening file dialogs.
 
-Android CI produces signed x86, x86_64 and universal APK artifacts and can optionally publish a prerelease from `workflow_dispatch`.
+Android CI produces signed ARM64, ARMv7, universal, x86 and x86_64 APK artifacts and can optionally publish a prerelease from `workflow_dispatch`.
 
 For a signed Android release, install JDK 17, Android SDK Platform 36, Build Tools 36.0.0,
 NDK 27.2.12479018 and the Rust Android targets, then run:
@@ -153,10 +158,10 @@ The first run generates a release keystore and credentials in `.signing/`; subse
 builds reuse that identity. Both directories are ignored by Git. See
 [Android release instructions](ANDROID_RELEASE.md) for environment setup and key backups.
 
-The `Android CI` workflow runs checks, signs all three APK variants with repository
+The `Android CI` workflow runs checks, signs all five APK variants with repository
 Secrets, uploads each APK/checksum/public certificate separately, and can boot the universal and x86_64 packages in a headless
 Android emulator. Manual builds default to no GitHub Release publication. Publishing
-requires the workflow's explicit release input or a pushed `v*` tag.
+requires the workflow's explicit release input or a pushed `v*` tag, and waits for the Android smoke test to pass. Release notes are short, versioned files under `docs/releases/`.
 
 ## Status
 

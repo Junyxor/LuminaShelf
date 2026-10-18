@@ -2,7 +2,9 @@
 
 The release uses application ID `app.luminashelf.client`, Android API 24 or newer,
 and target API 36. The universal release contains arm64-v8a, armeabi-v7a, x86
-and x86_64. GitHub Actions also provides separate x86 and x86_64 APKs.
+and x86_64. GitHub Actions also provides separate arm64-v8a (recommended for
+64-bit phones), armeabi-v7a (older 32-bit phones), x86 and x86_64 APKs.
+The x86 packages are for Intel/AMD devices or emulators, not ARM phones.
 
 ## Requirements
 
@@ -49,20 +51,24 @@ does not require an active network and DNS follows VPN/Private DNS/network chang
 
 ## Output and signing identity
 
-`artifacts/android/LuminaShelf-0.8.0-universal-release.apk` is the universal release.
-The independent packages use the `-x86-release.apk` and `-x86_64-release.apk`
-suffixes. All variants have the same version, application ID and signing identity.
+`artifacts/android/LuminaShelf-0.8.1-universal-release.apk` is the universal release.
+Independent packages use the `-arm64-v8a-release.apk`, `-armeabi-v7a-release.apk`,
+`-x86-release.apk` and `-x86_64-release.apk` suffixes. All variants have the same
+version, application ID and signing identity.
 The same folder contains its `.sha256` checksum, `release-certificate.pem` and
 `universal-build-info.json`. Release builds use R8 and optimized, stripped Rust
-libraries; native ELF segments and APK native library entries are aligned for
-16 KB pages.
+libraries. APKs compress the native libraries with AGP's `jniLibs.useLegacyPackaging`;
+Android extracts the library for the installed device. This reduces download size
+but uses more installation space than loading an uncompressed library from the
+APK. ELF LOAD segments retain 16 KB alignment; compressed ZIP entries do not need
+to be directly mapped. See [native packaging](docs/android-native-packaging.md).
 
 After building, run `./scripts/verify-apk.ps1` in PowerShell with the same SDK/JDK
 environment. It verifies the manifest, non-debuggable flag, the exact expected ABI set, original
-certificate, v2/v3 signatures, 16 KB ZIP/ELF alignment and every JNI method declared
+certificate, v2/v3 signatures, native compression/extraction, 16 KB ZIP/ELF alignment and every JNI method declared
 in the generated Kotlin runtime. CI runs this check and uploads
 `universal-apk-verification.json` alongside the APK. For independent packages,
-use `./scripts/verify-apk.ps1 -Variant x86` or `-Variant x86_64`; reports and build
+use `./scripts/verify-apk.ps1 -Variant arm64-v8a` (or `armeabi-v7a`, `x86`, `x86_64`); reports and build
 metadata are named separately for each variant.
 
 The first release creates `.signing/luminashelf-release.p12` (a PKCS#12 keystore
@@ -72,10 +78,11 @@ updates: Android requires the same signing certificate for an in-place upgrade.
 The public certificate can be shared with the APK. Signing passwords are passed
 through process environment variables, not command-line arguments.
 
-For an arm64-only release:
+For phone-only releases:
 
 ```bash
 npm run android:release -- aarch64
+npm run android:release -- armv7
 ```
 
 For the independent x86 and x86_64 signed releases:
@@ -100,7 +107,7 @@ node scripts/android-build.mjs --debug x86_64
 Install an APK with Android Platform Tools:
 
 ```bash
-adb install -r artifacts/android/LuminaShelf-0.8.0-universal-release.apk
+adb install -r artifacts/android/LuminaShelf-0.8.1-arm64-v8a-release.apk
 ```
 
 The app-local default download folder on Android is under
@@ -113,13 +120,13 @@ Z-Library account tests require a user-owned account and a reachable EAPI origin
 ## GitHub Actions and signing Secrets
 
 The `Android CI` workflow checks TypeScript, Rust libraries, formatting, Clippy and
-the production frontend at four widths before building three signed APK variants.
+the production frontend at four widths before building five signed APK variants.
 It uses Windows with SDK 36 / NDK 27.2 / JDK 17 and two build workers. The subsequent
 Ubuntu job boots the actual signed APK in a headless Android 35 emulator and
 checks the universal package's real HTTPS download, background service, pause,
 process recovery, Android long press, resume and EPUB reader. It then installs
-the independent x86_64 package over the same app and verifies startup. The x86
-package receives signature/ELF/JNI/alignment checks; it is not runtime-tested on
+the independent x86_64 package over the same app and verifies startup. ARM64,
+ARMv7 and x86 receive signature/ELF/JNI/alignment/compression checks; they are not runtime-tested on
 the x86_64 emulator. The job collects UI trees, screenshots, process ID and logcat.
 The emulator action invokes one standalone shell script
 so APK path variables survive between commands. A launch check does not substitute for
@@ -135,6 +142,10 @@ limitations are recorded in `docs/android-shaping-reference.md`.
 An independent shell accessibility bridge stays connected throughout the test
 and reads visible nodes without waiting for continuous progress updates to stop.
 Each snapshot clears stale system accessibility nodes before reading coordinates.
+Task-state checks distinguish actual status text from the filter tabs. Startup
+handles only the emulator's exact Android-owned Quickstep ANR dialog; application
+ANRs and crashes continue to fail acceptance. Overlay diagnostics preserve node
+visibility and do not substitute hidden nodes for visible reading controls.
 It is compiled only for the cloud test, never included in the APK. The normal
 workflow runs a regression for shared rate, unchanged bytes and TCP half-close.
 
@@ -151,16 +162,19 @@ removed in the final workflow step. CI refuses to generate a replacement key, an
 release signing verifies the existing public certificate fingerprint.
 
 Run the workflow manually on the desired branch. Choose `apk_variant=all` for
-all three packages, or select `universal`, `x86`
-or `x86_64` for one package. The default remains all three. Independent x86 builds
-receive static verification; universal and x86_64 builds can run the Android test.
+all five packages, or select `arm64-v8a`, `armeabi-v7a`, `universal`, `x86`
+or `x86_64` for one package. Independent ARM and x86 builds receive static
+verification; universal and x86_64 builds can run the Android test.
 To retest an existing signed artifact, set `verify_build_run` to its Actions run
 ID and keep `android_smoke=true`; select `universal` (or `all`) or `x86_64` to
-match the existing artifact. An x86-only retest is rejected because that emulator
-cannot execute the x86 package.
+match the existing artifact. ARM-only and x86-only retests are rejected because
+that emulator cannot execute those packages.
 Keep `publish_prerelease` false
 for an artifact-only build; turn it on and supply an explicit `v` tag only when
-publishing a prerelease. A pushed `v*` tag publishes a release. The uploaded artifact
-names are `LuminaShelf-signed-universal`, `LuminaShelf-signed-x86` and
-`LuminaShelf-signed-x86_64`; the Android acceptance evidence is
-`Android-release-smoke`.
+publishing a prerelease, with `apk_variant=all` and `android_smoke=true`.
+A pushed `v*` tag publishes a release. One release job waits for all five packages
+and the Android test, checks package hashes/revisions, then publishes the short
+`docs/releases/<tag>.md` notes. Desktop packaging only produces its Actions
+artifact, avoiding competing publishers for the same Release.
+The uploaded artifact names use `LuminaShelf-signed-<variant>`; the Android
+acceptance evidence is `Android-release-smoke`.
