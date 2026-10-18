@@ -565,7 +565,7 @@ mod tests {
             parsed[0],
             ("https://books.example.org/".into(), true, false)
         );
-        assert_eq!(parsed[1].1, false);
+        assert!(!parsed[1].1);
         assert!(parse_directory(&serde_json::json!({"success":0,"error":"Please login"})).is_err());
         assert!(parse_directory(&serde_json::json!({"ok":true})).is_err());
     }

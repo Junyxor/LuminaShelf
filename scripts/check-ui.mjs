@@ -201,6 +201,9 @@ try {
     await page.locator(".reader-text").filter({ hasText: "这是用于检查" }).waitFor();
     const targets = await page.locator(".reader-toolbar button").evaluateAll((buttons) => buttons.map((button) => { const rect = button.getBoundingClientRect(); return { label: button.textContent, width: rect.width, height: rect.height, visible: rect.left >= 0 && rect.right <= innerWidth }; }));
     assert(targets.every((target) => target.visible && target.width >= 48 && target.height >= 48), `Reader toolbar clipped at ${width}: ${JSON.stringify(targets)}`);
+    await page.locator(".reader-body").evaluate((body) => { body.scrollTop = body.scrollHeight; });
+    await page.locator(".reader-position small").filter({ hasText: "100%" }).waitFor();
+    await page.waitForFunction(() => window.__uiCalls.some((call) => call.command === "save_reading_progress" && JSON.parse(call.args.locator).offset === 1));
     await page.screenshot({ path: resolve(output, `reader-${width}.png`) }); await page.getByRole("button", { name: "← 书架", exact: true }).click();
     await nav.getByRole("button", { name: "设置", exact: true }).click(); await page.getByRole("button", { name: /书源镜像与发布源/ }).click();
     await page.getByRole("button", { name: "拉取并检测镜像", exact: true }).click(); await page.getByText("接口可用 · 120 ms", { exact: true }).waitFor();

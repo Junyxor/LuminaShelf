@@ -123,15 +123,6 @@ struct CoreStatus {
     network_stack: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadProgressEvent {
-    provider_id: String,
-    book_id: String,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadReceipt {
@@ -591,28 +582,6 @@ fn sanitize_filename(value: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resumable_destination_is_stable_per_book() {
-        let directory = Path::new("downloads");
-        let first = resumable_destination(directory, "A / Book", "epub", "zlibrary", "12345");
-        let second = resumable_destination(directory, "A / Book", "epub", "zlibrary", "12345");
-        assert_eq!(first, second);
-        assert!(first.to_string_lossy().contains("zlibrary-12345"));
-    }
-
-    #[test]
-    fn resumable_destination_separates_books_with_same_title() {
-        let directory = Path::new("downloads");
-        let first = resumable_destination(directory, "Same Title", "epub", "zlibrary", "1");
-        let second = resumable_destination(directory, "Same Title", "epub", "zlibrary", "2");
-        assert_ne!(first, second);
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -698,4 +667,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LuminaShelf");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resumable_destination_is_stable_per_book() {
+        let directory = Path::new("downloads");
+        let first = resumable_destination(directory, "A / Book", "epub", "zlibrary", "12345");
+        let second = resumable_destination(directory, "A / Book", "epub", "zlibrary", "12345");
+        assert_eq!(first, second);
+        assert!(first.to_string_lossy().contains("zlibrary-12345"));
+    }
+
+    #[test]
+    fn resumable_destination_separates_books_with_same_title() {
+        let directory = Path::new("downloads");
+        let first = resumable_destination(directory, "Same Title", "epub", "zlibrary", "1");
+        let second = resumable_destination(directory, "Same Title", "epub", "zlibrary", "2");
+        assert_ne!(first, second);
+    }
 }

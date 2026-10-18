@@ -70,15 +70,6 @@ pub fn observe(app: AppHandle, manager: DownloadManager) {
                 Err(_) => break,
             };
             let _ = app.emit("download-task", &task);
-            let _ = app.emit(
-                "download-progress",
-                DownloadProgressEvent {
-                    provider_id: task.provider_id.clone(),
-                    book_id: task.book_id.clone(),
-                    downloaded_bytes: task.downloaded_bytes,
-                    total_bytes: task.total_bytes,
-                },
-            );
             let active = manager.active_count().await > 0;
             if active != background_active {
                 background(&app, active).await;
