@@ -2,6 +2,13 @@
 
 LuminaShelf is a high-performance cross-platform ebook client built around a Rust core and a thin Tauri + React UI.
 
+## 0.8.2 — 阅读流畅度与 PDF 修复
+
+滚动阅读只更新阅读器自身的进度，不再重绘整个书架；进度仍在停止滚动后保存。
+刚打开章节、位置恢复期间的滚动不再被丢弃，阅读进度可靠保存。
+PDF 单页渲染或保存进度失败后保留画布，翻页即可恢复。下载时封面不再随进度重绘，
+并移除没有接收方的重复进度事件。
+
 ## 0.8.1 — 手机安装包修复
 
 64 位手机推荐下载 **ARM64**，旧 32 位手机选择 ARMv7，不确定时选择通用版。

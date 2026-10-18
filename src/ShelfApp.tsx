@@ -42,7 +42,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("library");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [account, setAccount] = useState<ZLibraryAccountStatus | null>(null);
-  const [version, setVersion] = useState("0.8.0");
+  const [version, setVersion] = useState("0.8.2");
   const [settings, setSettings] = useState<SettingsData>(loadSettings);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);

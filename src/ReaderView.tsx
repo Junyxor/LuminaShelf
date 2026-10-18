@@ -86,6 +86,8 @@ export default function ReaderView({
   const scrollFrame = useRef<number | null>(null);
   const [offset, setOffset] = useState(initialOffset);
   const offsetRef = useRef(initialOffset);
+  const progressCallback = useRef(onProgressChange);
+  progressCallback.current = onProgressChange;
   const chapter = book.chapters[chapterIndex];
   const chapterCount = book.chapters.length;
   const loadedChapter = chapter ? chapterCache[chapter.id] : undefined;
@@ -103,12 +105,19 @@ export default function ReaderView({
   useEffect(() => {
     if (!chapterText || chapterLoading) return;
     restoring.current = true;
+    let settle: number | null = null;
     const frame = requestAnimationFrame(() => {
       const body = bodyRef.current;
       if (body) body.scrollTop = offsetRef.current * Math.max(0, body.scrollHeight - body.clientHeight);
-      requestAnimationFrame(() => { restoring.current = false; });
+      const restoredTop = body?.scrollTop ?? 0;
+      settle = requestAnimationFrame(() => {
+        restoring.current = false;
+        // A scroll that landed during the restore was ignored; pick up where it left the reader.
+        if (body && Math.abs(body.scrollTop - restoredTop) > 1) sampleProgress();
+      });
     });
-    return () => { cancelAnimationFrame(frame); };
+    // Clear the flag on cleanup too, otherwise an interrupted restore would ignore every later scroll.
+    return () => { cancelAnimationFrame(frame); if (settle !== null) cancelAnimationFrame(settle); restoring.current = false; };
   }, [bookPath, chapter?.id, chapterText, chapterLoading]);
 
   useEffect(() => {
@@ -246,6 +255,17 @@ export default function ReaderView({
     () => format === "txt" ? "纯文本 · 全文" : `${chapter?.title ?? "未命名章节"} · ${chapterIndex + 1}/${chapterCount}`,
     [chapter?.title, chapterIndex, chapterCount, format],
   );
+
+  function sampleProgress() {
+    const body = bodyRef.current;
+    if (!body) return;
+    const extent = body.scrollHeight - body.clientHeight;
+    const next = extent > 0 ? Math.min(1, Math.max(0, body.scrollTop / extent)) : 1;
+    if (next === offsetRef.current) return;
+    offsetRef.current = next;
+    setOffset(next);
+    progressCallback.current?.(next);
+  }
 
   if (!chapter) return null;
 
@@ -385,14 +405,7 @@ export default function ReaderView({
             if (chapterLoading || restoring.current || scrollFrame.current !== null) return;
             scrollFrame.current = requestAnimationFrame(() => {
               scrollFrame.current = null;
-              const body = bodyRef.current;
-              if (!body || restoring.current) return;
-              const extent = body.scrollHeight - body.clientHeight;
-              const next = extent > 0 ? Math.min(1, Math.max(0, body.scrollTop / extent)) : 1;
-              if (next === offsetRef.current) return;
-              offsetRef.current = next;
-              setOffset(next);
-              onProgressChange?.(next);
+              if (!restoring.current) sampleProgress();
             });
           }}>
             <article>
