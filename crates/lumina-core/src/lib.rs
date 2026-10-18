@@ -20,9 +20,9 @@ pub use mirror::{
 };
 pub use network::{AppResolver, ReqwestResolver, ResolveResult, ResolverMode, ResolverPolicy};
 pub use provider::{
-    BookDetails, BookFormat, BookSummary, GutendexProvider, ProviderDescriptor, ProviderRegistry,
-    SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage, ZLibraryProfile,
-    ZLibraryProvider, ZLibrarySession,
+    BookDetails, BookFormat, BookSummary, GutendexProvider, ProviderDescriptor, ProviderError,
+    ProviderRegistry, SearchQuery, SearchResult, ZLibraryHistoryItem, ZLibraryHistoryPage,
+    ZLibraryProfile, ZLibraryProvider, ZLibrarySession,
 };
 pub use reader::{
     open_book, open_book_chapter, open_book_metadata, ReaderBook, ReaderBookMetadata,

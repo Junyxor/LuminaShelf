@@ -13,7 +13,7 @@ use lumina_core::{
     library::{now_unix_ms, scan_folder},
     AppResolver, BookDetails, BookFormat, GutendexProvider, LibraryItem, ProviderDescriptor,
     ProviderRegistry, ReadingProgress, ResolveResult, ResolverPolicy, SearchQuery, SearchResult,
-    StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider,
+    StateStore, ZLibraryHistoryPage, ZLibraryProfile, ZLibraryProvider, ZLibrarySession,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,6 +47,7 @@ struct AppState {
     zlibrary_probe: NetworkClient,
     zlibrary_config: RwLock<ZLibraryConfig>,
     zlibrary_config_path: PathBuf,
+    zlibrary_session_path: PathBuf,
     book_dir: PathBuf,
     downloads: DownloadManager,
 }
@@ -83,15 +84,22 @@ impl AppState {
             GutendexProvider::new(resolver.clone()).map_err(|error| error.to_string())?;
         providers.register(gutendex);
 
+        // The account survives restarts so queued downloads can resume without a new login.
+        let zlibrary_session_path = config_dir.join("zlibrary-session.json");
         let zlibrary = Arc::new(
-            ZLibraryProvider::new(resolver.clone(), initial_origin)
-                .map_err(|error| error.to_string())?,
+            ZLibraryProvider::with_session(
+                resolver.clone(),
+                initial_origin,
+                load_zlibrary_session(&zlibrary_session_path),
+            )
+            .map_err(|error| error.to_string())?,
         );
         providers.register_shared(zlibrary.clone());
+        sync_zlibrary_failover(&zlibrary, &state_store, zlibrary_config.origin_mode);
 
         let zlibrary_probe = NetworkClient::new(
             resolver.clone(),
-            "LuminaShelf/0.6 connection",
+            &format!("LuminaShelf/{} connection", env!("CARGO_PKG_VERSION")),
             Some(Duration::from_secs(12)),
         )
         .map_err(|error| error.to_string())?;
@@ -110,6 +118,7 @@ impl AppState {
             zlibrary_probe,
             zlibrary_config: RwLock::new(zlibrary_config),
             zlibrary_config_path,
+            zlibrary_session_path,
         })
     }
 }
@@ -252,6 +261,7 @@ async fn zlibrary_login(
     };
     save_zlibrary_config(&state.zlibrary_config_path, &config)?;
     *state.zlibrary_config.write().await = config;
+    sync_zlibrary_failover(&state.zlibrary, &state.state_store, origin_mode);
 
     state.zlibrary.clear_session().await;
     state
@@ -259,11 +269,12 @@ async fn zlibrary_login(
         .set_origin(selected_origin)
         .await
         .map_err(|error| error.to_string())?;
-    state
+    let session = state
         .zlibrary
         .login_direct(email, &password)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{error:#}"))?;
+    save_zlibrary_session(&state.zlibrary_session_path, &session)?;
 
     let profile = state.zlibrary.profile().await.ok();
     Ok(ZLibraryLoginResult {
@@ -275,6 +286,11 @@ async fn zlibrary_login(
 #[tauri::command]
 async fn zlibrary_logout(state: State<'_, AppState>) -> Result<ZLibraryAccountStatus, String> {
     state.zlibrary.clear_session().await;
+    match fs::remove_file(&state.zlibrary_session_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("退出登录时无法删除已保存的账户：{error}")),
+    }
     Ok(zlibrary_account_status(&state).await)
 }
 
@@ -536,6 +552,60 @@ fn save_resolver_policy(path: &Path, policy: &ResolverPolicy) -> Result<(), Stri
     fs::write(path, bytes).map_err(|error| format!("write resolver policy: {error}"))
 }
 
+/// Automatic mode may move to any known mirror when the current one stops answering.
+fn sync_zlibrary_failover(
+    zlibrary: &ZLibraryProvider,
+    store: &StateStore,
+    mode: ZLibraryOriginMode,
+) {
+    zlibrary.set_fallback_origins(match mode {
+        ZLibraryOriginMode::Automatic => source_commands::failover_candidates(store),
+        ZLibraryOriginMode::Manual => Vec::new(),
+    });
+}
+
+fn load_zlibrary_session(path: &Path) -> Option<ZLibrarySession> {
+    let session: ZLibrarySession = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    session.is_complete().then_some(session)
+}
+
+fn save_zlibrary_session(path: &Path, session: &ZLibrarySession) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("create config directory: {error}"))?;
+    }
+    let bytes = serde_json::to_vec(session).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // The key is an account credential: keep it readable by this user only.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(
+        &mut options
+            .open(&temporary)
+            .map_err(|error| format!("保存登录状态失败：{error}"))?,
+        &bytes,
+    )
+    .map_err(|error| format!("保存登录状态失败：{error}"))?;
+    fs::rename(&temporary, path).map_err(|error| format!("保存登录状态失败：{error}"))
+}
+
+/// Persists the site that failover moved to, so the next launch starts from a working mirror.
+fn persist_zlibrary_failover(app: AppHandle, mut changes: tokio::sync::watch::Receiver<Url>) {
+    tauri::async_runtime::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let origin = changes.borrow_and_update().to_string();
+            let state = app.state::<AppState>();
+            let mut config = state.zlibrary_config.write().await;
+            if config.origin.as_deref() == Some(origin.as_str()) {
+                continue;
+            }
+            config.origin = Some(origin);
+            let _ = save_zlibrary_config(&state.zlibrary_config_path, &config);
+        }
+    });
+}
+
 fn load_zlibrary_config(path: &Path) -> Result<ZLibraryConfig, String> {
     if !path.exists() {
         return Ok(ZLibraryConfig::default());
@@ -600,7 +670,9 @@ pub fn run() {
                 .unwrap_or(config_dir);
             let state = AppState::new(config_dir).map_err(std::io::Error::other)?;
             download_commands::observe(app.handle().clone(), state.downloads.clone());
+            let origin_changes = state.zlibrary.origin_changes();
             app.manage(state);
+            persist_zlibrary_failover(app.handle().clone(), origin_changes);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -680,6 +752,35 @@ mod tests {
         let second = resumable_destination(directory, "A / Book", "epub", "zlibrary", "12345");
         assert_eq!(first, second);
         assert!(first.to_string_lossy().contains("zlibrary-12345"));
+    }
+
+    #[test]
+    fn saved_account_survives_a_restart_and_stays_private() {
+        let directory =
+            std::env::temp_dir().join(format!("lumina-session-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("zlibrary-session.json");
+        assert!(load_zlibrary_session(&path).is_none());
+        let session = ZLibrarySession {
+            user_id: "42".into(),
+            user_key: "secret".into(),
+        };
+        save_zlibrary_session(&path, &session).unwrap();
+        let restored = load_zlibrary_session(&path).unwrap();
+        assert_eq!(
+            (restored.user_id.as_str(), restored.user_key.as_str()),
+            ("42", "secret")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        }
+        fs::write(&path, r#"{"userId":"","userKey":""}"#).unwrap();
+        assert!(
+            load_zlibrary_session(&path).is_none(),
+            "an empty session is not a login"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

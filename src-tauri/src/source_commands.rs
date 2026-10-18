@@ -102,6 +102,32 @@ fn load(store: &StateStore) -> Result<MirrorConfiguration, String> {
         }
     }
 }
+/// Known mirrors in the order failover should try them: last checked good first, known bad last.
+pub(super) fn failover_candidates(store: &StateStore) -> Vec<Url> {
+    let mut mirrors = load(store).map(|config| config.mirrors).unwrap_or_default();
+    mirrors.retain(|item| item.content_available && !item.redirector);
+    mirrors.sort_by(|a, b| {
+        let rank = |item: &BookMirror| match item.available {
+            Some(true) => 0,
+            None => 1,
+            Some(false) => 2,
+        };
+        rank(a).cmp(&rank(b)).then(
+            a.latency_ms
+                .unwrap_or(f64::MAX)
+                .total_cmp(&b.latency_ms.unwrap_or(f64::MAX)),
+        )
+    });
+    let mut seen = std::collections::HashSet::new();
+    mirrors
+        .iter()
+        .map(|item| item.origin.as_str())
+        .chain(ZLIBRARY_CANDIDATES.iter().copied())
+        .filter_map(|origin| normalize_origin(origin).ok())
+        .filter(|origin| seen.insert(origin.to_string()))
+        .collect()
+}
+
 fn persist(store: &StateStore, config: &MirrorConfiguration) -> Result<(), String> {
     store
         .set_setting(
@@ -496,6 +522,8 @@ pub async fn refresh_book_mirrors(
     config.last_refresh = Some(now_unix_ms());
     config.selected_origin = state.zlibrary.origin().await.to_string();
     persist(&state.state_store, &config)?;
+    let mode = state.zlibrary_config.read().await.origin_mode;
+    sync_zlibrary_failover(&state.zlibrary, &state.state_store, mode);
     Ok(config)
 }
 
@@ -517,7 +545,12 @@ pub async fn select_book_mirror(
     };
     save_zlibrary_config(&state.zlibrary_config_path, &next)?;
     *state.zlibrary_config.write().await = next;
-    state.zlibrary.clear_session().await;
+    // The account key is valid on every mirror of the same service; switching keeps it.
+    sync_zlibrary_failover(
+        &state.zlibrary,
+        &state.state_store,
+        ZLibraryOriginMode::Manual,
+    );
     state
         .zlibrary
         .set_origin(origin)

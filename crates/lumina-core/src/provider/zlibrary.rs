@@ -1,23 +1,58 @@
 use super::{
-    BookDetails, BookFormat, BookProvider, BookSummary, ProviderCapabilities, SearchQuery,
-    SearchResult,
+    BookDetails, BookFormat, BookProvider, BookSummary, ProviderCapabilities, ProviderError,
+    SearchQuery, SearchResult,
 };
 use crate::network::{AppResolver, NetworkClient};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, COOKIE};
+use futures::{stream, StreamExt};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE, COOKIE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, Mutex, RwLock};
 use url::Url;
+
+/// Whether an EAPI route needs, accepts or ignores the account session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Auth {
+    Anonymous,
+    Optional,
+    Required,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZLibrarySession {
     pub user_id: String,
     pub user_key: String,
+}
+
+impl ZLibrarySession {
+    pub fn is_complete(&self) -> bool {
+        !self.user_id.trim().is_empty() && !self.user_key.trim().is_empty()
+    }
+
+    fn headers(&self) -> Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        let mut user_id =
+            HeaderValue::from_str(&self.user_id).context("invalid session user id")?;
+        let mut user_key =
+            HeaderValue::from_str(&self.user_key).context("invalid session user key")?;
+        let mut cookie = HeaderValue::from_str(&format!(
+            "remix_userid={}; remix_userkey={}",
+            self.user_id, self.user_key
+        ))
+        .context("invalid session cookie")?;
+        user_id.set_sensitive(true);
+        user_key.set_sensitive(true);
+        cookie.set_sensitive(true);
+        headers.insert(HeaderName::from_static("remix-userid"), user_id);
+        headers.insert(HeaderName::from_static("remix-userkey"), user_key);
+        headers.insert(COOKIE, cookie);
+        Ok(headers)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,30 +85,47 @@ pub struct ZLibraryProvider {
     session: Arc<RwLock<Option<ZLibrarySession>>>,
     cache: Arc<DashMap<String, BookDetails>>,
     acquisition_hints: Arc<DashMap<String, String>>,
+    // Empty in manual mode: a site the user picked is never replaced behind their back.
+    fallback_origins: Arc<std::sync::RwLock<Vec<Url>>>,
+    failover: Arc<Mutex<()>>,
+    origin_changes: Arc<watch::Sender<Url>>,
 }
 
 impl ZLibraryProvider {
     pub fn new(resolver: AppResolver, origin: Url) -> Result<Self> {
-        if origin.scheme() != "https" {
+        Self::with_session(resolver, origin, None)
+    }
+
+    /// Restores a saved account so downloads queued before a restart can continue.
+    pub fn with_session(
+        resolver: AppResolver,
+        origin: Url,
+        session: Option<ZLibrarySession>,
+    ) -> Result<Self> {
+        if !secure_origin(&origin) {
             return Err(anyhow!("Z-Library provider requires HTTPS"));
         }
         let client = NetworkClient::with_redirects(
             resolver,
-            "LuminaShelf/0.6 ZLibrary",
+            &format!("LuminaShelf/{} ZLibrary", env!("CARGO_PKG_VERSION")),
             Some(Duration::from_secs(25)),
             false,
         )?;
+        let session = session.filter(ZLibrarySession::is_complete);
         Ok(Self {
             client,
+            origin_changes: Arc::new(watch::channel(origin.clone()).0),
             origin: Arc::new(RwLock::new(origin)),
-            session: Arc::new(RwLock::new(None)),
+            session: Arc::new(RwLock::new(session)),
             cache: Arc::new(DashMap::new()),
             acquisition_hints: Arc::new(DashMap::new()),
+            fallback_origins: Arc::new(std::sync::RwLock::new(Vec::new())),
+            failover: Arc::new(Mutex::new(())),
         })
     }
 
     pub async fn set_origin(&self, origin: Url) -> Result<()> {
-        if origin.scheme() != "https" {
+        if !secure_origin(&origin) {
             return Err(anyhow!("Z-Library provider requires HTTPS"));
         }
         *self.origin.write().await = origin;
@@ -86,8 +138,22 @@ impl ZLibraryProvider {
         self.origin.read().await.clone()
     }
 
+    /// Sites tried in order when the current one stops answering. Empty disables failover.
+    pub fn set_fallback_origins(&self, origins: Vec<Url>) {
+        let origins = origins.into_iter().filter(secure_origin).collect();
+        *self
+            .fallback_origins
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = origins;
+    }
+
+    /// Yields the new origin whenever failover moves to another site.
+    pub fn origin_changes(&self) -> watch::Receiver<Url> {
+        self.origin_changes.subscribe()
+    }
+
     pub async fn set_session(&self, session: ZLibrarySession) -> Result<()> {
-        if session.user_id.trim().is_empty() || session.user_key.trim().is_empty() {
+        if !session.is_complete() {
             return Err(anyhow!("session user id/key cannot be empty"));
         }
         *self.session.write().await = Some(session);
@@ -117,11 +183,9 @@ impl ZLibraryProvider {
             path_component(book),
             path_component(hash)
         );
-        let response: SearchEnvelope = self.request_json(&path, None, false).await?;
+        let response: SearchEnvelope = self.request_json(&path, None, Auth::Optional).await?;
         if response.success != 1 {
-            return Err(anyhow!(response
-                .error
-                .unwrap_or_else(|| "无法读取其他格式".into())));
+            return Err(rejected(response.error, "无法读取其他格式"));
         }
         Ok(response
             .books
@@ -137,7 +201,7 @@ impl ZLibraryProvider {
             path_component(book),
             path_component(hash)
         );
-        let value: Value = self.request_json(&path, None, false).await?;
+        let value: Value = self.request_json(&path, None, Auth::Optional).await?;
         let book = value.get("book").context("书籍详情不完整")?;
         Ok(
             serde_json::json!({"email":book.get("sendToEmailAvailable").and_then(Value::as_bool).unwrap_or(false),"kindle":book.get("kindleAvailable").and_then(Value::as_bool).unwrap_or(false),"onlineReading":book.get("readOnlineAvailable").and_then(Value::as_bool).unwrap_or(false),"nativeSendSupported":false}),
@@ -151,11 +215,16 @@ impl ZLibraryProvider {
             path_component(book),
             path_component(hash)
         );
-        let value: Value = self.request_json(&path, None, false).await?;
-        anyhow::ensure!(
-            value.get("success").and_then(Value::as_i64) == Some(1),
-            "书源未返回书籍详情"
-        );
+        let value: Value = self.request_json(&path, None, Auth::Optional).await?;
+        if value.get("success").and_then(Value::as_i64) != Some(1) {
+            return Err(rejected(
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                "书源未返回书籍详情",
+            ));
+        }
         let book: EapiBook =
             serde_json::from_value(value.get("book").cloned().context("详情响应没有书籍")?)?;
         let (_, mut details, hint) = map_eapi_book(book).context("书籍详情不完整")?;
@@ -168,11 +237,11 @@ impl ZLibraryProvider {
     }
 
     pub async fn profile(&self) -> Result<ZLibraryProfile> {
-        let response: ProfileEnvelope = self.request_json("/eapi/user/profile", None, true).await?;
+        let response: ProfileEnvelope = self
+            .request_json("/eapi/user/profile", None, Auth::Required)
+            .await?;
         if response.success != 1 {
-            return Err(anyhow!(response
-                .error
-                .unwrap_or_else(|| "profile request was rejected".to_string())));
+            return Err(rejected(response.error, "书源拒绝读取账户信息"));
         }
         let user = response
             .user
@@ -194,11 +263,9 @@ impl ZLibraryProvider {
             query.append_pair("limit", "50");
             format!("/eapi/user/book/downloaded?{}", query.finish())
         };
-        let response: SearchEnvelope = self.request_json(&path, None, true).await?;
+        let response: SearchEnvelope = self.request_json(&path, None, Auth::Required).await?;
         if response.success != 1 {
-            return Err(anyhow!(response
-                .error
-                .unwrap_or_else(|| "history request was rejected".to_string())));
+            return Err(rejected(response.error, "书源拒绝读取下载记录"));
         }
         let current = if response.pagination.current == 0 {
             page
@@ -233,12 +300,12 @@ impl ZLibraryProvider {
     pub async fn login_direct(&self, email: &str, password: &str) -> Result<ZLibrarySession> {
         let body = form(&[("email", email), ("password", password)]);
         let value: LoginEnvelope = self
-            .request_json("/eapi/user/login", Some(body), false)
+            .request_json("/eapi/user/login", Some(body), Auth::Anonymous)
             .await?;
         if value.success != 1 {
             return Err(anyhow!(value
                 .error
-                .unwrap_or_else(|| "login was rejected".to_string())));
+                .unwrap_or_else(|| "书源拒绝了登录，请检查邮箱和密码".to_string())));
         }
         let user = value
             .user
@@ -257,61 +324,169 @@ impl ZLibraryProvider {
         &self,
         path: &str,
         body: Option<String>,
-        auth: bool,
+        auth: Auth,
     ) -> Result<T> {
-        let origin = self.origin().await;
-        let endpoint = origin.join(path).context("build EAPI URL")?;
-        let client = self.client.client()?;
-        let mut request = if let Some(body) = body {
-            client
-                .post(endpoint)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(body)
-        } else {
-            client.get(endpoint)
-        };
-        request = request.header("accept", "application/json");
-        if auth {
-            let session = self
-                .session
-                .read()
-                .await
-                .clone()
-                .ok_or_else(|| anyhow!("Z-Library account is not signed in"))?;
-            request = request
-                .header("remix-userid", &session.user_id)
-                .header("remix-userkey", &session.user_key)
-                .header(
-                    "cookie",
-                    format!(
-                        "remix_userid={}; remix_userkey={}",
-                        session.user_id, session.user_key
-                    ),
-                );
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let session = self.session.read().await.clone();
+        match (auth, session) {
+            (Auth::Required, None) => return Err(ProviderError::LoginRequired.into()),
+            (Auth::Required | Auth::Optional, Some(session)) => headers.extend(session.headers()?),
+            _ => {}
         }
-        let response = request
-            .send()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .context("EAPI request failed")?;
+        let (_, response) = self.send(path, body.as_deref(), headers).await?;
         decode_response(response).await
     }
+
+    /// Sends one EAPI request, moving to a working mirror once if this site is unreachable.
+    async fn send(
+        &self,
+        path: &str,
+        body: Option<&str>,
+        headers: HeaderMap,
+    ) -> Result<(Url, reqwest::Response)> {
+        let mut origin = self.origin().await;
+        let mut failed_over = false;
+        loop {
+            let endpoint = origin.join(path).context("build EAPI URL")?;
+            let client = self.client.client()?;
+            let request = match body {
+                Some(body) => client
+                    .post(endpoint.clone())
+                    .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(body.to_owned()),
+                None => client.get(endpoint.clone()),
+            };
+            let failure = match request.headers(headers.clone()).send().await {
+                Ok(response) if !site_unusable(&response) => return Ok((endpoint, response)),
+                Ok(response) => anyhow!(
+                    "{} 返回 HTTP {}",
+                    origin.host_str().unwrap_or("书源"),
+                    response.status().as_u16()
+                ),
+                Err(error) if error.is_connect() || error.is_timeout() => {
+                    anyhow::Error::new(error.without_url())
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::new(error.without_url()).context("书源请求失败"))
+                }
+            };
+            if !failed_over {
+                failed_over = true;
+                if let Some(next) = self.fail_over(&origin).await {
+                    origin = next;
+                    continue;
+                }
+            }
+            return Err(failure.context(ProviderError::OriginUnavailable));
+        }
+    }
+
+    async fn fail_over(&self, failed: &Url) -> Option<Url> {
+        // Parallel requests share one probe round instead of each racing to switch.
+        let _guard = self.failover.lock().await;
+        let current = self.origin().await;
+        if &current != failed {
+            return Some(current);
+        }
+        let candidates: Vec<Url> = self
+            .fallback_origins
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|origin| *origin != failed)
+            .cloned()
+            .collect();
+        let client = self.client.client().ok()?;
+        let mut probes = stream::iter(candidates)
+            .map(|origin| {
+                let client = client.clone();
+                async move { probe_origin(&client, &origin).await.then_some(origin) }
+            })
+            .buffer_unordered(3);
+        while let Some(result) = probes.next().await {
+            if let Some(origin) = result {
+                *self.origin.write().await = origin.clone();
+                self.origin_changes.send_replace(origin.clone());
+                return Some(origin);
+            }
+        }
+        None
+    }
+}
+
+fn secure_origin(origin: &Url) -> bool {
+    // Unit tests drive the request path against plain local servers.
+    origin.scheme() == "https" || (cfg!(test) && origin.scheme() == "http")
+}
+
+async fn probe_origin(client: &reqwest::Client, origin: &Url) -> bool {
+    let Ok(endpoint) = origin.join("/eapi/info/domains") else {
+        return false;
+    };
+    let Ok(response) = client
+        .get(endpoint)
+        .header(ACCEPT, "application/json")
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .json::<Value>()
+        .await
+        .is_ok_and(|value| value.get("success").and_then(Value::as_i64) == Some(1))
+}
+
+/// Gateway errors and challenge pages mean this mirror cannot serve the API right now.
+fn site_unusable(response: &reqwest::Response) -> bool {
+    let status = response.status().as_u16();
+    let html = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"));
+    matches!(status, 500..=599) || (status == 403 && html)
+}
+
+/// Turns an EAPI `success: 0` reply into an error, recognising an expired or missing login.
+fn rejected(error: Option<String>, fallback: &str) -> anyhow::Error {
+    match error {
+        Some(message) if needs_login(&message) => ProviderError::LoginRequired.into(),
+        Some(message) if !message.trim().is_empty() => anyhow!(message),
+        _ => anyhow!(fallback.to_string()),
+    }
+}
+
+fn needs_login(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "please login",
+        "please log in",
+        "not logged",
+        "unauthorized",
+        "auth required",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 #[async_trait]
 impl BookProvider for ZLibraryProvider {
     async fn discover(&self) -> Result<super::DiscoveryPage> {
-        let (path, title, authenticated) = if self.has_session().await {
-            ("/eapi/user/book/recommended", "为你推荐", true)
+        let (path, title, auth) = if self.has_session().await {
+            ("/eapi/user/book/recommended", "为你推荐", Auth::Required)
         } else {
-            ("/eapi/book/most-popular", "站点热门", false)
+            ("/eapi/book/most-popular", "站点热门", Auth::Anonymous)
         };
-        let response: SearchEnvelope = self.request_json(path, None, authenticated).await?;
-        anyhow::ensure!(
-            response.success == 1,
-            "{}",
-            response.error.unwrap_or_else(|| "无法读取书源首页".into())
-        );
+        let response: SearchEnvelope = self.request_json(path, None, auth).await?;
+        if response.success != 1 {
+            return Err(rejected(response.error, "无法读取书源首页"));
+        }
         let items = response
             .books
             .into_iter()
@@ -366,13 +541,12 @@ impl BookProvider for ZLibraryProvider {
                     .finish(),
             );
         }
+        // EAPI search answers anonymously; the session only personalizes results.
         let response: SearchEnvelope = self
-            .request_json("/eapi/book/search", Some(encoded), true)
+            .request_json("/eapi/book/search", Some(encoded), Auth::Optional)
             .await?;
         if response.success != 1 {
-            return Err(anyhow!(response
-                .error
-                .unwrap_or_else(|| "search was rejected".to_string())));
+            return Err(rejected(response.error, "书源拒绝了搜索请求"));
         }
         let mut items = Vec::with_capacity(response.books.len());
         for book in response.books {
@@ -419,15 +593,9 @@ impl BookProvider for ZLibraryProvider {
                 path_component(book_id),
                 path_component(hash)
             );
-            let endpoint = self.origin().await.join(&path)?;
-            let response = self
-                .client
-                .client()?
-                .get(endpoint.clone())
-                .headers(self.download_headers().await?)
-                .send()
+            let (endpoint, response) = self
+                .send(&path, None, self.download_headers().await?)
                 .await
-                .map_err(reqwest::Error::without_url)
                 .context("无法读取下载文件信息")?;
             if response.status().is_redirection() {
                 let location = response
@@ -479,29 +647,12 @@ impl BookProvider for ZLibraryProvider {
     }
 
     async fn download_headers(&self) -> Result<HeaderMap> {
-        let session = self
-            .session
+        self.session
             .read()
             .await
-            .clone()
-            .ok_or_else(|| anyhow!("Z-Library account is not signed in"))?;
-        let mut headers = HeaderMap::new();
-        let mut user_id =
-            HeaderValue::from_str(&session.user_id).context("invalid session user id")?;
-        let mut user_key =
-            HeaderValue::from_str(&session.user_key).context("invalid session user key")?;
-        let mut cookie = HeaderValue::from_str(&format!(
-            "remix_userid={}; remix_userkey={}",
-            session.user_id, session.user_key
-        ))
-        .context("invalid session cookie")?;
-        user_id.set_sensitive(true);
-        user_key.set_sensitive(true);
-        cookie.set_sensitive(true);
-        headers.insert(HeaderName::from_static("remix-userid"), user_id);
-        headers.insert(HeaderName::from_static("remix-userkey"), user_key);
-        headers.insert(COOKIE, cookie);
-        Ok(headers)
+            .as_ref()
+            .ok_or(ProviderError::LoginRequired)?
+            .headers()
     }
 }
 
@@ -536,15 +687,17 @@ async fn decode_response<T: for<'de> Deserialize<'de>>(
 }
 
 fn download_link(value: &Value, format: BookFormat) -> Result<Url> {
-    anyhow::ensure!(
-        value.get("success").and_then(Value::as_i64) == Some(1),
-        "{}",
-        value
-            .pointer("/error/message")
-            .or_else(|| value.get("error"))
-            .and_then(Value::as_str)
-            .unwrap_or("书源未提供下载文件，可能需要登录或已达到配额")
-    );
+    if value.get("success").and_then(Value::as_i64) != Some(1) {
+        return Err(rejected(
+            value
+                .pointer("/error/message")
+                .or_else(|| value.get("error"))
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            "书源未提供下载文件，可能需要登录或已达到今日配额",
+        ));
+    }
     let file = value.get("file").context("下载接口未返回文件信息")?;
     if let Some(extension) = file.get("extension").and_then(Value::as_str) {
         anyhow::ensure!(
@@ -628,6 +781,9 @@ struct EapiBook {
     year: Value,
     #[serde(default)]
     identifier: Value,
+    // Homepage cards carry the ISBN here instead of `identifier`.
+    #[serde(default)]
+    isbn: Value,
     #[serde(default)]
     language: String,
     #[serde(default)]
@@ -674,7 +830,10 @@ fn map_eapi_book(book: EapiBook) -> Option<(BookSummary, BookDetails, Option<Str
         cover_url: non_empty(book.cover.clone()),
     };
     let mut identifiers = Vec::new();
-    let isbn = json_string(&book.identifier);
+    let mut isbn = json_string(&book.identifier);
+    if isbn.is_empty() {
+        isbn = json_string(&book.isbn);
+    }
     if !isbn.is_empty() {
         identifiers.push(("isbn".to_string(), isbn));
     }
@@ -771,5 +930,149 @@ mod download_tests {
         assert_eq!(book.title, "A & B");
         assert!(book.format.is_none());
         assert!(book.available_formats.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    /// Minimal EAPI fixture: answers by path and records every request head it receives.
+    async fn fixture(
+        routes: &'static [(&'static str, &'static str)],
+    ) -> (Url, Arc<StdMutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut head = Vec::new();
+                let mut buffer = [0_u8; 2048];
+                while !head.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).await.unwrap_or(0);
+                    if count == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&buffer[..count]);
+                }
+                let head = String::from_utf8_lossy(&head).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                log.lock().unwrap().push(head);
+                let body = routes
+                    .iter()
+                    .find(|(route, _)| path.starts_with(route))
+                    .map(|(_, body)| *body)
+                    .unwrap_or(r#"{"success":0,"error":"missing"}"#);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes()).await;
+            }
+        });
+        (origin, seen)
+    }
+
+    async fn closed_origin() -> Url {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        origin
+    }
+
+    const POPULAR: &[(&str, &str)] = &[
+        ("/eapi/info/domains", r#"{"success":1,"domains":[]}"#),
+        (
+            "/eapi/book/most-popular",
+            r#"{"success":1,"books":[{"id":7,"hash":"ab12","title":"Fixture","isbn":"9780000000001"}]}"#,
+        ),
+        (
+            "/eapi/book/search",
+            r#"{"success":1,"books":[],"pagination":{"current":1,"total_pages":1}}"#,
+        ),
+    ];
+
+    #[tokio::test]
+    async fn unreachable_site_fails_over_to_a_working_mirror() {
+        let dead = closed_origin().await;
+        let (alive, _) = fixture(POPULAR).await;
+        let provider = ZLibraryProvider::new(AppResolver::system().unwrap(), dead.clone()).unwrap();
+        provider.set_fallback_origins(vec![dead.clone(), alive.clone()]);
+        let mut changes = provider.origin_changes();
+        let page = provider.discover().await.unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(provider.origin().await, alive);
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(*changes.borrow_and_update(), alive);
+    }
+
+    #[tokio::test]
+    async fn manual_site_reports_origin_unavailable_instead_of_switching() {
+        let dead = closed_origin().await;
+        let provider = ZLibraryProvider::new(AppResolver::system().unwrap(), dead.clone()).unwrap();
+        let error = provider.discover().await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::OriginUnavailable)
+        ));
+        assert_eq!(provider.origin().await, dead);
+    }
+
+    #[tokio::test]
+    async fn search_works_signed_out_and_sends_the_session_once_signed_in() {
+        let (origin, seen) = fixture(POPULAR).await;
+        let provider = ZLibraryProvider::new(AppResolver::system().unwrap(), origin).unwrap();
+        let query = SearchQuery {
+            text: "fixture".into(),
+            page: 1,
+            page_size: 10,
+            formats: Vec::new(),
+        };
+        provider.search(query.clone()).await.unwrap();
+        assert!(!seen.lock().unwrap()[0]
+            .to_ascii_lowercase()
+            .contains("remix_userkey"));
+        provider
+            .set_session(ZLibrarySession {
+                user_id: "1".into(),
+                user_key: "key".into(),
+            })
+            .await
+            .unwrap();
+        provider.search(query).await.unwrap();
+        assert!(seen.lock().unwrap()[1].contains("remix_userkey=key"));
+    }
+
+    #[tokio::test]
+    async fn signed_out_downloads_report_login_required() {
+        let (origin, _) = fixture(POPULAR).await;
+        let provider = ZLibraryProvider::new(AppResolver::system().unwrap(), origin).unwrap();
+        let error = provider
+            .acquisition_url("7:ab12", BookFormat::Epub)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::LoginRequired)
+        ));
+    }
+
+    #[test]
+    fn server_login_messages_become_login_required() {
+        assert!(matches!(
+            rejected(Some("Please login".into()), "x").downcast_ref::<ProviderError>(),
+            Some(ProviderError::LoginRequired)
+        ));
+        assert_eq!(
+            rejected(Some("Daily limit reached".into()), "x").to_string(),
+            "Daily limit reached"
+        );
+        assert_eq!(rejected(None, "fallback").to_string(), "fallback");
     }
 }

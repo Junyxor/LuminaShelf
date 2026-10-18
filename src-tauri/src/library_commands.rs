@@ -135,21 +135,7 @@ pub async fn discover_books(
     provider_id: String,
     refresh: bool,
 ) -> Result<DiscoveryPage, String> {
-    if provider_id == "zlibrary"
-        && !state.zlibrary.has_session().await
-        && matches!(
-            state.zlibrary_config.read().await.origin_mode,
-            ZLibraryOriginMode::Automatic
-        )
-    {
-        if let Ok(origin) = select_automatic_zlibrary_origin(&state).await {
-            state
-                .zlibrary
-                .set_origin(origin)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
-        }
-    }
+    // An unreachable site in automatic mode fails over inside the provider request itself.
     let session = state.zlibrary.current_session().await;
     let scope = if provider_id == "zlibrary" {
         format!(

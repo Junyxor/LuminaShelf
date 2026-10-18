@@ -23,6 +23,8 @@ pub(super) enum Behavior {
     TransientProbe,
     SlowProbe,
     EncodedProbe,
+    BusyOnce,
+    LoginPage,
 }
 
 pub(super) struct Fixture {
@@ -125,6 +127,19 @@ impl Fixture {
                                 end.parse::<u64>().unwrap_or(data.len() as u64 - 1),
                             ))
                         });
+                    if matches!(behavior, Behavior::LoginPage) {
+                        let page = "<html><head><title> Sign in &amp; continue </title></head><body>login</body></html>";
+                        let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                        return;
+                    }
+                    if matches!(behavior, Behavior::BusyOnce)
+                        && range.is_some_and(|(start, end)| end > start)
+                        && probe_requests.fetch_add(1, Ordering::SeqCst) == 0
+                    {
+                        let _ = socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                        return;
+                    }
                     if matches!(behavior, Behavior::TransientProbe)
                         && range == Some((0, 0))
                         && probe_requests.fetch_add(1, Ordering::SeqCst) == 0
@@ -621,4 +636,38 @@ async fn cross_origin_file_redirects_do_not_forward_custom_account_headers() {
     sink.await.unwrap();
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_busy_server_is_retried_instead_of_failing_the_book() {
+    let fixture = Fixture::new(Behavior::BusyOnce).await;
+    let path = fixture.directory.join("book.bin");
+    let (tx, rx) = watch::channel(DownloadProgress::default());
+    fixture
+        .downloader(2, 32 * 1024)
+        .download_to(fixture.url.clone(), path.clone(), tx)
+        .await
+        .expect("a single 503 must be retried, not reported as a failed download");
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), *fixture.data);
+    assert!(rx.borrow().retry_count >= 1);
+}
+
+#[tokio::test]
+async fn an_html_login_page_is_reported_instead_of_saved_as_the_book() {
+    let fixture = Fixture::new(Behavior::LoginPage).await;
+    let path = fixture.directory.join("book.epub");
+    let (tx, _) = watch::channel(DownloadProgress::default());
+    let error = fixture
+        .downloader(1, 1024 * 1024)
+        .download_to(fixture.url.clone(), path.clone(), tx)
+        .await
+        .unwrap_err();
+    match error.downcast_ref::<TransferError>() {
+        Some(TransferError::NotABook(message)) => assert_eq!(message, "Sign in & continue"),
+        other => panic!("expected NotABook, got {other:?}: {error:#}"),
+    }
+    assert!(
+        !path.exists(),
+        "the login page must not be written as the book"
+    );
 }

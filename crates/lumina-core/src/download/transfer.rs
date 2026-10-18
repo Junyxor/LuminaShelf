@@ -201,6 +201,17 @@ async fn send(
     }
     unreachable!()
 }
+/// Busy or rate-limited servers get a longer, growing pause than a dropped connection.
+fn retry_delay(error: &anyhow::Error, attempt: usize) -> Duration {
+    if error
+        .downcast_ref::<TransferError>()
+        .is_some_and(TransferError::is_transient)
+    {
+        Duration::from_secs(1 << attempt.min(3))
+    } else {
+        Duration::from_millis(250 * (attempt as u64 + 1))
+    }
+}
 async fn inspect(
     downloader: &SegmentedDownloader,
     url: &Url,
@@ -219,15 +230,68 @@ async fn inspect(
                             || error.is_request())
                 }) || error
                     .downcast_ref::<tokio::time::error::Elapsed>()
-                    .is_some();
+                    .is_some()
+                    || error
+                        .downcast_ref::<TransferError>()
+                        .is_some_and(TransferError::is_transient);
                 if !transport || attempt == downloader.config.retries {
                     return Err(error);
                 }
-                tokio::select! { biased; _ = control.paused() => return Err(TransferError::Paused.into()), _ = tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))) => {} }
+                tokio::select! { biased; _ = control.paused() => return Err(TransferError::Paused.into()), _ = tokio::time::sleep(retry_delay(&error, attempt)) => {} }
             }
         }
     }
     unreachable!()
+}
+/// Reads a short JSON or HTML reply and returns its message, if the response is one.
+async fn error_page(response: &mut reqwest::Response) -> Option<String> {
+    let kind = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let json = kind.contains("json");
+    if !json && !kind.starts_with("text/html") && !kind.contains("xhtml") {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while bytes.len() < 64 * 1024 {
+        match tokio::time::timeout(Duration::from_secs(10), response.chunk()).await {
+            Ok(Ok(Some(chunk))) => bytes.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let message = if json {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                ["/error/message", "/error", "/message", "/msg"]
+                    .iter()
+                    .find_map(|pointer| value.pointer(pointer)?.as_str().map(str::to_string))
+            })
+    } else {
+        let lower = text.to_ascii_lowercase();
+        lower.find("<title").and_then(|start| {
+            let open = start + lower[start..].find('>')? + 1;
+            let close = open + lower[open..].find("</title")?;
+            Some(html_escape::decode_html_entities(text[open..close].trim()).into_owned())
+        })
+    };
+    Some(
+        message
+            .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|message| !message.is_empty())
+            .map(|message| message.chars().take(160).collect())
+            .unwrap_or_else(|| {
+                if json {
+                    "服务器返回了错误信息".into()
+                } else {
+                    "服务器返回了网页（可能是登录、验证或配额页面）".into()
+                }
+            }),
+    )
 }
 async fn inspect_once(
     downloader: &SegmentedDownloader,
@@ -247,11 +311,21 @@ async fn inspect_once(
         control,
     )
     .await?;
-    check_encoding(&response)?;
     let ranges = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     if !response.status().is_success() {
-        return Err(TransferError::Http(response.status().as_u16()).into());
+        let status = TransferError::Http(response.status().as_u16());
+        return Err(match error_page(&mut response).await {
+            Some(message) => anyhow::Error::from(status).context(message),
+            None => status.into(),
+        });
     }
+    // A login, captcha or quota page served with 200 must not be saved as the book.
+    if !ranges {
+        if let Some(message) = error_page(&mut response).await {
+            return Err(TransferError::NotABook(message).into());
+        }
+    }
+    check_encoding(&response)?;
     let total = if ranges {
         let (start, end, total) = content_range(&response).ok_or(TransferError::InvalidRange)?;
         ensure!(start == 0 && end == 0, TransferError::InvalidRange);
@@ -409,13 +483,16 @@ impl Transfer {
             match self.part_once(index, range).await {
                 Ok(()) => return Ok(()),
                 Err(error) => {
-                    if error.downcast_ref::<TransferError>().is_some() || attempt == self.retries {
+                    let fatal = error
+                        .downcast_ref::<TransferError>()
+                        .is_some_and(|error| !error.is_transient());
+                    if fatal || attempt == self.retries {
                         return Err(error);
                     }
                     self.progress.retries.fetch_add(1, Ordering::Relaxed);
                     self.progress.publish();
                     tokio::select! { biased; _ = self.control.paused() => return Err(TransferError::Paused.into()),
-                    _ = tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))) => {} }
+                    _ = tokio::time::sleep(retry_delay(&error, attempt)) => {} }
                 }
             }
         }

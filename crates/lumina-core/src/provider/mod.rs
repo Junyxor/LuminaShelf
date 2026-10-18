@@ -16,6 +16,15 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 
+/// Provider failures the UI and download queue explain differently from transport errors.
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("需要登录书源账户；如已登录，登录可能已失效，请重新登录")]
+    LoginRequired,
+    #[error("书源站点暂时无法连接")]
+    OriginUnavailable,
+}
+
 #[async_trait]
 pub trait BookProvider: Send + Sync {
     fn id(&self) -> &'static str;

@@ -26,5 +26,10 @@ url.workspace = true
 uuid.workspace = true
 zip.workspace = true
 
+# Desktop also trusts the OS certificate store, so TLS-inspecting corporate proxies and
+# antivirus HTTPS scanning keep working. Android keeps the bundled Mozilla roots only.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
+
 [dev-dependencies]
 rcgen = "0.14"

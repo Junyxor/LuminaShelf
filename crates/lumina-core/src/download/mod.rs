@@ -149,6 +149,14 @@ pub enum TransferError {
     RangeUnsupported,
     #[error("服务器返回的文件分段位置或版本不一致")]
     InvalidRange,
+    #[error("书源返回的不是书籍文件：{0}")]
+    NotABook(String),
+}
+impl TransferError {
+    /// Statuses that describe a momentary server condition rather than a broken link.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Http(408 | 425 | 429 | 500 | 502 | 503 | 504))
+    }
 }
 
 #[derive(Clone)]

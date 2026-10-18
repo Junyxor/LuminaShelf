@@ -93,7 +93,7 @@ pub async fn apply_dns_profile(
     set_resolver_policy(state, profile.policy).await
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkReport {
     host: String,
@@ -107,6 +107,15 @@ pub struct NetworkReport {
 }
 
 async fn check(policy: ResolverPolicy, host: String) -> Result<NetworkReport, String> {
+    check_path(policy, host, None).await
+}
+
+/// `path` probes an API route instead of the site root, which may be a browser challenge.
+async fn check_path(
+    policy: ResolverPolicy,
+    host: String,
+    path: Option<&str>,
+) -> Result<NetworkReport, String> {
     let started = Instant::now();
     let resolver = AppResolver::new(policy.clone()).map_err(|error| format!("{error:#}"))?;
     let mut report = NetworkReport {
@@ -130,11 +139,11 @@ async fn check(policy: ResolverPolicy, host: String) -> Result<NetworkReport, St
     let target = if host == "gutendex.com" {
         "https://gutendex.com/books/?ids=11".to_string()
     } else {
-        format!("https://{host}/")
+        format!("https://{host}{}", path.unwrap_or("/"))
     };
     let client = NetworkClient::new(
         resolver,
-        "LuminaShelf/0.6 diagnostic",
+        &format!("LuminaShelf/{} diagnostic", env!("CARGO_PKG_VERSION")),
         Some(Duration::from_secs(15)),
     )
     .map_err(|error| format!("{error:#}"))?;
@@ -183,6 +192,7 @@ pub async fn test_network(policy: ResolverPolicy, host: String) -> Result<Networ
 pub struct Optimization {
     policy: ResolverPolicy,
     report: NetworkReport,
+    zlibrary: Option<NetworkReport>,
     label: String,
 }
 
@@ -237,24 +247,50 @@ pub async fn optimize_network(state: State<'_, AppState>) -> Result<Optimization
             unique.push((label, policy));
         }
     }
+    // Both book sources are tested: a DNS that reaches Gutenberg can still be poisoned for
+    // Z-Library, which is the site most users need the setting for.
+    let zlibrary_host = state.zlibrary.origin().await.host_str().map(str::to_string);
     let mut reports = stream::iter(unique)
-        .map(|(label, policy)| async move {
-            let report = check(policy.clone(), "gutendex.com".into()).await;
-            (label, policy, report)
+        .map(|(label, policy)| {
+            let zlibrary_host = zlibrary_host.clone();
+            async move {
+                let (gutendex, zlibrary) =
+                    tokio::join!(check(policy.clone(), "gutendex.com".into()), async {
+                        match zlibrary_host {
+                            Some(host) => {
+                                check_path(policy.clone(), host, Some("/eapi/info/domains"))
+                                    .await
+                                    .ok()
+                            }
+                            None => None,
+                        }
+                    });
+                (label, policy, gutendex.ok(), zlibrary)
+            }
         })
         .buffer_unordered(2)
         .collect::<Vec<_>>()
         .await;
-    reports.retain(|(_, _, report)| report.as_ref().is_ok_and(|report| report.usable));
+    let reached = |report: &Option<NetworkReport>| report.as_ref().is_some_and(|r| r.usable);
+    let score = |gutendex: &Option<NetworkReport>, zlibrary: &Option<NetworkReport>| {
+        u8::from(reached(gutendex)) + 2 * u8::from(reached(zlibrary))
+    };
+    let elapsed =
+        |report: &Option<NetworkReport>| report.as_ref().map(|r| r.elapsed_ms).unwrap_or(f64::MAX);
+    reports.retain(|(_, _, gutendex, zlibrary)| score(gutendex, zlibrary) > 0);
     reports.sort_by(|a, b| {
-        a.2.as_ref()
-            .unwrap()
-            .elapsed_ms
-            .total_cmp(&b.2.as_ref().unwrap().elapsed_ms)
+        score(&b.2, &b.3)
+            .cmp(&score(&a.2, &a.3))
+            .then((elapsed(&a.2) + elapsed(&a.3)).total_cmp(&(elapsed(&b.2) + elapsed(&b.3))))
     });
-    let (label, mut policy, report) = reports
+    let (label, mut policy, gutendex, zlibrary) = reports
         .into_iter()
         .next()
+        .ok_or("没有配置完成实际书源连接；请检查网络或配置可用代理")?;
+    let report = gutendex
+        .into_iter()
+        .chain(zlibrary.clone())
+        .find(|report| report.usable)
         .ok_or("没有配置完成实际书源连接；请检查网络或配置可用代理")?;
     policy.fallback_to_system = existing.fallback_to_system;
     state
@@ -270,7 +306,8 @@ pub async fn optimize_network(state: State<'_, AppState>) -> Result<Optimization
     Ok(Optimization {
         label,
         policy: applied,
-        report: report.unwrap(),
+        report,
+        zlibrary,
     })
 }
 

@@ -18,7 +18,7 @@ impl GutendexProvider {
     pub fn new(resolver: AppResolver) -> Result<Self> {
         let client = NetworkClient::new(
             resolver,
-            "LuminaShelf/0.6 Gutenberg",
+            &format!("LuminaShelf/{} Gutenberg", env!("CARGO_PKG_VERSION")),
             Some(std::time::Duration::from_secs(25)),
         )?;
         Ok(Self { client })
@@ -115,15 +115,22 @@ impl BookProvider for GutendexProvider {
         let summary = to_summary(book.clone());
         Ok(BookDetails {
             summary,
-            description: book.subjects.first().cloned(),
+            description: book
+                .summaries
+                .first()
+                .or_else(|| book.subjects.first())
+                .cloned(),
             identifiers: vec![("gutenberg".to_string(), id.to_string())],
         })
     }
 
     async fn acquisition_url(&self, id: &str, format: BookFormat) -> Result<Url> {
-        let book = self.fetch_one(id).await?;
-        acquisition(&book.formats, format)
-            .ok_or_else(|| anyhow!("requested format is not available"))
+        match self.fetch_one(id).await {
+            Ok(book) => acquisition(&book.formats, format)
+                .ok_or_else(|| anyhow!("古登堡没有提供 {} 格式", format.extension())),
+            // Gutendex is a third-party catalogue; Gutenberg itself keeps serving files.
+            Err(error) => canonical_file(id, format).ok_or(error),
+        }
     }
 }
 
@@ -143,6 +150,8 @@ struct GutendexBook {
     languages: Vec<String>,
     #[serde(default)]
     subjects: Vec<String>,
+    #[serde(default)]
+    summaries: Vec<String>,
     #[serde(default)]
     formats: HashMap<String, String>,
 }
@@ -182,6 +191,18 @@ fn available_formats(formats: &HashMap<String, String>) -> Vec<BookFormat> {
     output
 }
 
+/// Gutenberg's own stable per-book file routes, used when the Gutendex catalogue is unreachable.
+fn canonical_file(id: &str, format: BookFormat) -> Option<Url> {
+    let id: u64 = id.parse().ok()?;
+    let suffix = match format {
+        BookFormat::Epub => "epub3.images",
+        BookFormat::Mobi => "kf8.images",
+        BookFormat::Txt => "txt.utf-8",
+        _ => return None,
+    };
+    Url::parse(&format!("https://www.gutenberg.org/ebooks/{id}.{suffix}")).ok()
+}
+
 fn acquisition(formats: &HashMap<String, String>, format: BookFormat) -> Option<Url> {
     let candidates: &[&str] = match format {
         BookFormat::Epub => &["application/epub+zip"],
@@ -199,4 +220,20 @@ fn acquisition(formats: &HashMap<String, String>, format: BookFormat) -> Option<
         .find_map(|key| formats.get(*key))
         .and_then(|raw| Url::parse(raw).ok())
         .filter(|url| url.scheme() == "https" || url.scheme() == "http")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_routes_cover_readable_formats_only() {
+        assert_eq!(
+            canonical_file("1342", BookFormat::Epub).unwrap().as_str(),
+            "https://www.gutenberg.org/ebooks/1342.epub3.images"
+        );
+        assert!(canonical_file("1342", BookFormat::Txt).is_some());
+        assert!(canonical_file("1342", BookFormat::Pdf).is_none());
+        assert!(canonical_file("../1342", BookFormat::Epub).is_none());
+    }
 }

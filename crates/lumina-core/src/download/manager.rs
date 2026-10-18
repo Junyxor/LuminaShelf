@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     library::{validate_readable_file, LibraryItem},
-    ProviderRegistry, StateStore,
+    ProviderError, ProviderRegistry, StateStore,
 };
 use anyhow::{anyhow, ensure, Context};
 use std::{
@@ -578,7 +578,7 @@ impl DownloadManager {
     ) -> Result<(LibraryItem, Option<String>)> {
         // Refresh a provider's expiring signed URL on each explicit resume and once on an HTTP expiry.
         for renewal in 0..2 {
-            let url = tokio::select! { biased; _ = control.paused() => return Err(TransferError::Paused.into()), result = self.0.providers.acquisition_url(&task.provider_id, &task.book_id, task.format) => result? };
+            let url = tokio::select! { biased; _ = control.paused() => return Err(TransferError::Paused.into()), result = self.0.providers.acquisition_url(&task.provider_id, &task.book_id, task.format) => result.context(ACQUIRE_FAILED)? };
             let headers = self
                 .0
                 .providers
@@ -735,23 +735,98 @@ fn preserve_error_page(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+const ACQUIRE_FAILED: &str = "无法取得下载链接";
+/// One actionable sentence for the queue; the full chain stays in `error_details`.
 fn download_error(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<ProviderError>() {
+        Some(ProviderError::LoginRequired) => {
+            return "需要登录 Z-Library 账户才能下载。登录后点击继续下载，进度会保留".into()
+        }
+        Some(ProviderError::OriginUnavailable) => {
+            return "书源站点暂时无法连接，已尝试其他镜像。请检查网络，或在设置中更换书源镜像"
+                .into()
+        }
+        None => {}
+    }
     match error.downcast_ref::<TransferError>() {
         Some(TransferError::Http(401 | 403)) => {
-            "下载链接失效或账户权限不足，进度已保留；继续时将重新取得链接".into()
+            return "下载链接失效或账户权限不足，进度已保留；继续时将重新取得链接".into()
         }
-        Some(TransferError::Http(429)) => "书源请求过多，稍后继续下载，或减少连接数".into(),
+        Some(TransferError::Http(404 | 410)) => {
+            return "下载链接已过期，进度已保留；继续时将重新取得链接".into()
+        }
+        Some(TransferError::Http(429)) => {
+            return "书源请求过多，稍后继续下载，或在下载设置中减少连接数".into()
+        }
+        Some(status @ TransferError::Http(code)) if status.is_transient() => {
+            return format!("书源服务器暂时繁忙（HTTP {code}），已自动重试；稍后点击继续下载")
+        }
+        Some(TransferError::Http(code)) => {
+            return format!("下载服务器拒绝了请求（HTTP {code}），可稍后重试或换一种格式")
+        }
         Some(TransferError::InvalidRange) => {
-            "服务器返回的分段或文件版本不一致，已停止合并；进度保留".into()
+            return "服务器返回的分段或文件版本不一致，已停止合并；进度保留".into()
         }
-        _ => "下载中断，已保留可续传的进度。检查网络后点击继续下载".into(),
+        Some(TransferError::NotABook(message)) => {
+            return format!(
+            "书源没有返回书籍文件（{message}）。可能需要登录、通过网页验证，或已达到今日下载次数"
+        )
+        }
+        _ => {}
     }
+    let storage_full = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::StorageFull)
+    });
+    if storage_full {
+        return "存储空间不足。清理空间后点击继续下载，进度会保留".into();
+    }
+    let text = format!("{error:#}");
+    if text.contains("格式校验未通过") {
+        return "文件已下载，但不是有效的书籍文件。可以从头重新下载，或换一种格式".into();
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("dns") || lower.contains("resolve") || lower.contains("no record") {
+        return "无法解析书源域名。请在 设置 → DNS 与网络 中换一个 DNS，或配置代理".into();
+    }
+    if ["certificate", "tls", "handshake", "unknownissuer"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return "无法建立安全连接（证书校验失败），网络可能被拦截。请检查代理或 DNS 设置".into();
+    }
+    if lower.contains("timed out") || lower.contains("timeout") || text.contains("超时") {
+        return "连接书源超时，进度已保存。网络恢复后点击继续下载".into();
+    }
+    if error
+        .chain()
+        .any(|cause| cause.to_string() == ACQUIRE_FAILED)
+    {
+        return format!("{ACQUIRE_FAILED}：{}", error.root_cause());
+    }
+    "下载中断，已保留可续传的进度。检查网络后点击继续下载".into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn queue_errors_name_the_actual_cause() {
+        let login = anyhow::Error::from(ProviderError::LoginRequired).context(ACQUIRE_FAILED);
+        assert!(download_error(&login).contains("登录"));
+        let quota = anyhow!("You have reached your daily download limit").context(ACQUIRE_FAILED);
+        assert!(download_error(&quota).contains("daily download limit"));
+        let page = anyhow::Error::from(TransferError::NotABook("Sign in".into()));
+        assert!(download_error(&page).contains("Sign in"));
+        let busy = anyhow::Error::from(TransferError::Http(503));
+        assert!(download_error(&busy).contains("503"));
+        let dns = anyhow!("dns error: no record found for books.example");
+        assert!(download_error(&dns).contains("DNS"));
+        let full = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        assert!(download_error(&full).contains("存储空间"));
+    }
     #[tokio::test]
     async fn completing_a_book_during_pause_all_keeps_it_completed() {
         let manager = DownloadManager::new(

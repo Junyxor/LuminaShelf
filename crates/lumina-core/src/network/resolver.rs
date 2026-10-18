@@ -99,7 +99,6 @@ pub struct AppResolver {
 enum DnsBackend {
     Hickory(Box<TokioResolver>),
     Doh(Box<super::doh::DohResolver>),
-    #[cfg(any(target_os = "android", test))]
     Native,
 }
 
@@ -156,7 +155,6 @@ impl AppResolver {
         match &**self.selected.read().await {
             DnsBackend::Doh(resolver) => resolver.clear_cache().await,
             DnsBackend::Hickory(resolver) => resolver.clear_cache(),
-            #[cfg(any(target_os = "android", test))]
             DnsBackend::Native => {}
         }
         *self.proxy.write().map_err(|_| anyhow!("代理配置锁异常"))? = policy.proxy_url.clone();
@@ -263,20 +261,12 @@ fn resolver_transport_changed(before: &ResolverPolicy, after: &ResolverPolicy) -
         || before.timeout_ms != after.timeout_ms
 }
 
-#[cfg(target_os = "android")]
 fn build_system_resolver() -> Result<DnsBackend> {
-    // Android can have no active network at startup. OS lookups are lazy and also
-    // follow changes to the active network, VPN and Private DNS configuration.
+    // "System" means exactly what the browser uses: the OS resolver. Re-reading resolver
+    // files misses VPN and split DNS, macOS scoped resolvers, Windows NRPT and Android
+    // Private DNS, and fails when no network is up at startup. OS lookups are lazy and
+    // follow changes to the active network.
     Ok(DnsBackend::Native)
-}
-
-#[cfg(not(target_os = "android"))]
-fn build_system_resolver() -> Result<DnsBackend> {
-    let mut builder = TokioResolver::builder_tokio().context("load system DNS configuration")?;
-    builder.options_mut().server_ordering_strategy = ServerOrderingStrategy::QueryStatistics;
-    Ok(DnsBackend::Hickory(Box::new(
-        builder.build().context("build system DNS resolver")?,
-    )))
 }
 
 fn build_resolver(policy: &ResolverPolicy) -> Result<DnsBackend> {
@@ -430,7 +420,6 @@ async fn lookup_with_timeout(
                 .iter()
                 .collect()
         }
-        #[cfg(any(target_os = "android", test))]
         DnsBackend::Native => timeout(deadline, tokio::net::lookup_host((host, 0)))
             .await
             .context("DNS lookup timed out")??
