@@ -45,8 +45,8 @@ def ui_request(command):
             return response
 
 
-def tree():
-    response = ui_request("DUMP")
+def tree(all_nodes=False):
+    response = ui_request("DUMP_ALL" if all_nodes else "DUMP")
     if response.startswith(b"ERROR "):
         raise RuntimeError(response.decode("utf-8"))
     return ET.fromstring(response)
@@ -59,6 +59,10 @@ def label(node):
 def bounds(node):
     values = list(map(int, re.findall(r"\d+", node.get("bounds", ""))))
     return values if len(values) == 4 else [0, 0, 0, 0]
+
+
+class UiWaitTimeout(AssertionError):
+    pass
 
 
 def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
@@ -87,7 +91,7 @@ def wait_node(predicate, seconds=75, scroll=False, source_metadata=False):
         except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, ET.ParseError) as exc:
             error = str(exc)
         time.sleep(0.4)
-    raise AssertionError("Timed out waiting for Android UI: " + error)
+    raise UiWaitTimeout("Timed out waiting for Android UI: " + error)
 
 
 def click_node(node):
@@ -101,8 +105,8 @@ def click(text, seconds=75):
     return root
 
 
-def evidence(name):
-    root = tree()
+def evidence(name, all_nodes=False):
+    root = tree(all_nodes)
     ET.ElementTree(root).write(OUT / (name + ".xml"), encoding="utf-8", xml_declaration=True)
     adb("shell", "screencap", "-p", "/sdcard/lumina-step.png")
     adb("pull", "/sdcard/lumina-step.png", str(OUT / (name + ".png")))
@@ -118,6 +122,11 @@ def byte_progress(text):
 
 def progress(root):
     return max((byte_progress(label(node)) for node in root.iter("node")), default=0)
+
+
+def task_state(node, state):
+    # The filter tabs repeat these labels even when no task has that state.
+    return node.get("class") == "android.widget.TextView" and node.get("text") == state
 
 
 try:
@@ -162,7 +171,7 @@ try:
     # failures must be distinguished from shaping and saved-progress behavior.
     network_speed("full")
     click_node(download)
-    wait_node(lambda n: n.get("text") == "已完成", 150)
+    wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-unshaped-control")
     steps.append({"step": "unshaped real HTTPS download control", "title": title})
     manage, _ = wait_node(lambda n: label(n).strip().startswith("管理下载 "))
@@ -186,7 +195,7 @@ try:
     adb("shell", "am", "start", "-n", PACKAGE + "/.MainActivity")
     # Pause through the visible control; the transfer must checkpoint before returning.
     click("暂停", 100)
-    _, root = wait_node(lambda n: n.get("text") == "已暂停", 60)
+    _, root = wait_node(lambda n: task_state(n, "已暂停"), 60)
     saved = progress(root)
     assert saved > 0, "No partial bytes saved"
     assert saved > before, "No byte progress while app was in background"
@@ -205,7 +214,7 @@ try:
     adb("shell", "am", "force-stop", PACKAGE)
     adb("shell", "am", "start", "-n", PACKAGE + "/.MainActivity")
     click("下载")
-    _, recovered = wait_node(lambda n: n.get("text") == "已暂停", 60)
+    _, recovered = wait_node(lambda n: task_state(n, "已暂停"), 60)
     assert progress(recovered) == saved, "Partial progress did not survive process death"
     # Real Android long touch, then release: must open management without activating a destructive row.
     title_node, _ = wait_node(lambda n: n.get("text", "").strip() == title)
@@ -218,10 +227,23 @@ try:
     network_speed("full")
     node, _ = wait_node(lambda n: label(n).strip().startswith("继续下载 ") or n.get("text") == "继续下载")
     click_node(node)
-    wait_node(lambda n: n.get("text") == "已完成", 150)
+    wait_node(lambda n: task_state(n, "已完成"), 150)
     evidence("download-completed")
     click("阅读")
-    wait_node(lambda n: "书架" in label(n) and "←" in label(n), 60)
+    reader_focus_tabs = 0
+    reader_deadline = time.monotonic() + 60
+    while True:
+        remaining = max(0, reader_deadline - time.monotonic())
+        try:
+            wait_node(lambda n: "书架" in label(n) and "←" in label(n), remaining if reader_focus_tabs == 8 else min(5, remaining))
+            break
+        except UiWaitTimeout:
+            if reader_focus_tabs == 8 or time.monotonic() >= reader_deadline:
+                evidence("reader-accessibility-all", all_nodes=True)
+                raise
+            # Move real keyboard focus into the overlay without activating controls.
+            adb("shell", "input", "keyevent", "KEYCODE_TAB")
+            reader_focus_tabs += 1
     for chapter_attempt in range(7):
         current = tree()
         if any(len(n.get("text", "")) > 160 for n in current.iter("node")):
@@ -232,7 +254,7 @@ try:
         time.sleep(0.5)
     wait_node(lambda n: len(n.get("text", "")) > 160, 30)
     evidence("download-reader")
-    steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved})
+    steps.append({"step": "process recovery, actual Android long press, resume, completion and built-in EPUB reader", "savedBytesRounded": saved, "readerFocusTabs": reader_focus_tabs})
 finally:
     network_speed("full", check=False)
     try:

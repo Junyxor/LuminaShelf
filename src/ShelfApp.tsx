@@ -42,7 +42,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("library");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [account, setAccount] = useState<ZLibraryAccountStatus | null>(null);
-  const [version, setVersion] = useState("0.8.0");
+  const [version, setVersion] = useState("0.8.2");
   const [settings, setSettings] = useState<SettingsData>(loadSettings);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
@@ -165,7 +165,8 @@ export default function App() {
     void invoke("save_reading_progress", { libraryId: reader.item.id, locator: JSON.stringify({ chapter: reader.book.chapters[chapter]?.id, offset: 0 }), fraction: chapter / reader.book.chapters.length }).catch((reason) => setNotice({ text: messageOf(reason), error: true }));
   }
   function saveOffset(offset: number) {
-    if (!reader) return; setReader({ ...reader, offset });
+    // The reader tracks its own scroll position; only persist it here so scrolling doesn't re-render the whole shelf.
+    if (!reader) return;
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => {
       void invoke("save_reading_progress", { libraryId: reader.item.id, locator: JSON.stringify({ chapter: reader.book.chapters[reader.chapter]?.id, offset }), fraction: (reader.chapter + offset) / reader.book.chapters.length }).catch((reason) => setNotice({ text: messageOf(reason), error: true }));
@@ -215,7 +216,7 @@ export default function App() {
     <BookDetailsDialog book={selectedBook} providerId={selectedProvider} favorite={Boolean(selectedBook && favoriteKeys.has(`${selectedProvider}:${selectedBook.id}`))} signedIn={Boolean(account?.signedIn)} onClose={() => setSelectedBook(null)} onFavorite={(book) => void toggleFavorite(book, selectedProvider)} onDownload={(book, format) => void downloadBook(book, format, selectedProvider)} onLogin={() => { setSelectedBook(null); setPage("account"); }} />
     <DownloadedBookActions item={managed} onClose={() => setManaged(null)} onRead={(item) => void openBook(item)} onRemove={(item) => { setRemoveFile(false); setRemoving(item); }} onDelete={(item) => { setRemoveFile(true); setRemoving(item); }} onRetry={(item) => showDetails({ id: item.sourceBookId!, title: item.title, authors: item.authors, format: item.format as BookFormat, availableFormats: [item.format as BookFormat] }, item.sourceProvider!)} onConverted={(item) => setLibrary((current) => [item, ...current.filter((value) => value.id !== item.id)])} />
     <Dialog.Root open={Boolean(removing)} onOpenChange={(open) => { if (!open) setRemoving(null); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="confirm-dialog"><Dialog.Title>{removeFile ? "删除下载文件？" : "从书架移除？"}</Dialog.Title><Dialog.Description>“{removing?.title}”将从已下载书架移除。{removeFile ? "应用管理的本地副本会删除，收藏会保留。" : "本地文件会保留。"}</Dialog.Description><div className="dialog-actions"><Dialog.Close className="secondary-button">取消</Dialog.Close><button className="danger-button" onClick={() => void removeBook()}>{removeFile ? "删除文件" : "移除"}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
-    {reader ? <ReaderView book={reader.book} bookPath={reader.item.path} fallbackTitle={reader.item.title} format={reader.item.format} chapterIndex={reader.chapter} progressFraction={(reader.chapter + reader.offset) / reader.book.chapters.length} initialOffset={reader.offset} onProgressChange={saveOffset} onChapterChange={changeChapter} onClose={() => setReader(null)} /> : null}
+    {reader ? <ReaderView book={reader.book} bookPath={reader.item.path} fallbackTitle={reader.item.title} format={reader.item.format} chapterIndex={reader.chapter} initialOffset={reader.offset} onProgressChange={saveOffset} onChapterChange={changeChapter} onClose={() => setReader(null)} /> : null}
     {pdf ? <PdfReader libraryId={pdf.id} path={pdf.path} title={pdf.title} onClose={() => setPdf(null)} /> : null}
   </div>;
 }

@@ -251,7 +251,8 @@ export default function PdfReader({ libraryId, path, title, onClose }: Props) {
         <div className="pdf-stage" ref={stageRef}>
           {loading ? <div className="pdf-status">正在打开 PDF…</div> : null}
           {error ? <div className="pdf-status error">{error}</div> : null}
-          {!loading && !error ? (
+          {/* Keep the canvas mounted after page-level errors so changing pages can recover. */}
+          {!loading && document ? (
             <div className={`pdf-canvas-wrap ${rendering ? "rendering" : ""}`}>
               <canvas ref={canvasRef} />
             </div>

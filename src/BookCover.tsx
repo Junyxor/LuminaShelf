@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
-export default function BookCover({ title, authors = [], url, format }: { title: string; authors?: string[]; url?: string | null; format?: string }) {
+function BookCover({ title, authors = [], url, format }: { title: string; authors?: string[]; url?: string | null; format?: string }) {
   const [image, setImage] = useState<string | null>(null);
   const [visible, setVisible] = useState(false);
   const element = useRef<HTMLDivElement | null>(null);
@@ -24,3 +24,5 @@ export default function BookCover({ title, authors = [], url, format }: { title:
   }, [url, visible]);
   return <div className={`book-cover tone-${tone}`} ref={element}>{image ? <img src={image} alt="" loading="lazy" onError={() => setImage(null)} /> : <div className="type-cover"><span>{format?.toUpperCase() || "LUMINA"}</span><strong>{title}</strong><small>{authors[0] || "星书"}</small></div>}</div>;
 }
+
+export default memo(BookCover);

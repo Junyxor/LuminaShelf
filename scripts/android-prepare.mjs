@@ -54,6 +54,18 @@ export function prepareAndroid() {
   );
   writeFileSync(gradle, buildScript);
 
+  // Compress native libraries in APK downloads; Android extracts them when installing.
+  const appGradle = resolve(android, "app/build.gradle.kts");
+  let appBuildScript = readFileSync(appGradle, "utf8");
+  if (!appBuildScript.includes("jniLibs.useLegacyPackaging = true")) {
+    const anchor = "    buildFeatures {";
+    if (appBuildScript.split(anchor).length !== 2) {
+      throw new Error("Unknown Android Gradle template: cannot configure compressed native libraries.");
+    }
+    appBuildScript = appBuildScript.replace(anchor, `    packaging {\n        jniLibs.useLegacyPackaging = true\n    }\n${anchor}`);
+    writeFileSync(appGradle, appBuildScript);
+  }
+
   const icons = resolve(root, "src-tauri/icons/android");
   if (existsSync(icons)) cpSync(icons, resolve(android, "app/src/main/res"), { recursive: true });
   cpSync(resolve(root, "src-tauri/android/MainActivity.kt"), resolve(android, "app/src/main/java/app/luminashelf/client/MainActivity.kt"));
